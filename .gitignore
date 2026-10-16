@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+logs/*.log
+backups/
+data/processed/*
+!data/processed/.gitkeep
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.streamlit/secrets.toml

@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect market data every 30 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=market-collector.service
+
+[Install]
+WantedBy=timers.target
