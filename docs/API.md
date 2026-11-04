@@ -12,7 +12,19 @@ Base URL: `http://127.0.0.1:8000`. JSON timestamps are UTC ISO-8601. The API is 
 | GET | `/api/v1/assets/{symbol}/bars?interval=1h&limit=96` | Bounded historical bars; interval `1h` or `1d`, limit 1–500 |
 | GET | `/api/v1/system/jobs?limit=20` | Recent collection outcomes; limit 1–100 |
 | GET | `/api/v1/alerts?limit=100` | Alert history, configured threshold and ntfy configured boolean |
+| GET | `/api/v1/news?q=&category=&asset=&limit=50&offset=0` | Search/filter collected RSS/Atom articles; limit 1–100 |
+| GET | `/api/v1/news/{article_id}` | Retrieve one stored article |
 | GET | `/api/v1/analysis/{symbol}` | Stored model report or `{available:false,...}` when none exists |
+| GET | `/api/social/health` | Social collection, AI and notification configuration state |
+| GET | `/api/social/watchlist` | Assets used to form social search queries |
+| GET | `/api/social/posts?asset=&source_type=&category=&sentiment=&priority=&since=&until=&limit=50&offset=0` | Filtered collected posts and their event labels |
+| GET | `/api/social/events?asset=&category=&sentiment=&priority=&since=&until=&limit=50&offset=0` | Filtered classified events |
+| GET | `/api/social/statistics` | Post/event/source counts and rule distributions |
+| GET | `/api/social/alerts?limit=50&offset=0` | Social alert history and per-channel delivery outcomes |
+| GET/POST/PATCH/DELETE | `/api/social/sources[/{source_id}]` | Manage local source registry; delete deactivates the source |
+| GET/POST | `/api/social/alert-rules` | List or add local alert rules |
+| GET | `/api/social/notification-history?limit=50&offset=0` | Per-channel delivery attempts |
+| POST | `/api/social/test-notification` | Send a real test to an enabled, configured channel |
 
 `/` and frontend assets are served from `frontend/dist/` when that directory exists.
 
@@ -44,7 +56,15 @@ This is a schema example, not live market data. `price`/`volume` may be null; `f
 
 - `422`: invalid symbol or query bound.
 - `404`: no stored bar for the requested symbol/interval.
+- `404`: news article ID does not exist.
+- `422`: invalid news category, asset symbol, or query bound.
 - `500`: unreadable stored model report.
 - `503`: local database unavailable on `/healthz`.
 
 A missing model evaluation is a successful response with `available: false`; it is not a prediction failure. No provider error text or credentials are returned in API responses.
+
+The news list response includes `items`, total `count`, `limit`, `offset`, and supported `categories`. Articles expose source-provided title, summary/content, publication time (UTC when available), source label, original article URL, language when present, rule-based category, and matched tracked assets. It does not expose configured feed URLs. The detail endpoint returns the same fields for one article. Search covers title, summary, and source-provided content; `asset` is an exact symbol filter.
+
+News collection is a separate command (`python -m backend.run_news_collector`) configured by the `MARKET_NEWS_FEEDS` JSON environment variable. It is not run by an API request and does not depend on AI/model inference.
+
+Social collection is separate from API reads and runs through `python -m backend.run_social_monitor` or `collect_social_once`. `POST /api/social/test-notification` can cause an external side effect if the requested channel is configured and enabled; it is not a dry run. The unauthenticated API must remain loopback-only. Social posts/events are labeled unverified, classification is heuristic, and the AI status is `disabled` or `not_configured` until an actual provider is implemented.

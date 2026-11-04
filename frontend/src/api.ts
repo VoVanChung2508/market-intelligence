@@ -86,6 +86,111 @@ export interface AlertsResponse {
   ntfy_configured: boolean;
 }
 
+export interface NewsArticle {
+  id: number;
+  url: string;
+  title: string;
+  summary: string | null;
+  content: string | null;
+  published_at: string | null;
+  source: string;
+  language: string | null;
+  category: string;
+  related_assets: string[];
+  collected_at: string;
+}
+
+export interface NewsResponse {
+  items: NewsArticle[];
+  count: number;
+  limit: number;
+  offset: number;
+  categories: string[];
+}
+
+export interface SocialPost {
+  id: number;
+  text: string;
+  post_url: string;
+  published_at: string;
+  username: string | null;
+  source_category: string | null;
+  verification_status: "unverified";
+  assets: string[];
+  events: Array<{
+    category: string;
+    sentiment: string;
+    priority: string;
+    priority_score: number;
+    unverified_claim: boolean;
+  }>;
+}
+
+export interface SocialStatistics {
+  posts: number;
+  events: number;
+  active_sources: number;
+  pending_analysis: number;
+  categories: Record<string, number>;
+  sentiments: Record<string, number>;
+  priorities: Record<string, number>;
+  ai_status: "disabled" | "not_configured" | "configured";
+}
+
+export interface SocialEvent {
+  id: number;
+  symbol: string | null;
+  category: string;
+  sentiment: string;
+  priority: string;
+  priority_score: number;
+  unverified_claim: boolean;
+  created_at: string;
+  text: string;
+  post_url: string;
+  username: string | null;
+  verification_status: "unverified";
+}
+
+export interface SocialSource {
+  id: number;
+  account_id: string;
+  username: string;
+  display_name: string;
+  category: string;
+  verified: boolean;
+  reputation_score: number;
+  supported_assets: string[];
+  active: boolean;
+}
+
+export interface SocialAlertRule {
+  id: number;
+  name: string;
+  enabled: boolean;
+  minimum_score: number;
+  assets: string[];
+  categories: string[];
+  cooldown_seconds: number;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+  timezone: string;
+}
+
+export interface SocialDelivery {
+  id: number;
+  channel: string;
+  status: string;
+  attempts: number;
+  error_code: string | null;
+  delivered_at: string | null;
+  updated_at: string;
+  symbol: string | null;
+  category: string;
+  priority: string;
+  post_url: string;
+}
+
 export class ApiError extends Error {
   constructor(readonly statusCode: number, message: string) {
     super(message);
@@ -136,4 +241,105 @@ export function getAnalysisReport(
 
 export function getAlerts(signal?: AbortSignal): Promise<AlertsResponse> {
   return request<AlertsResponse>("/api/v1/alerts?limit=100", signal);
+}
+
+export function getNews(
+  filters: {
+    q?: string;
+    category?: string;
+    asset?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+  signal?: AbortSignal,
+): Promise<NewsResponse> {
+  const query = new URLSearchParams();
+  if (filters.q) query.set("q", filters.q);
+  if (filters.category) query.set("category", filters.category);
+  if (filters.asset) query.set("asset", filters.asset);
+  query.set("limit", String(filters.limit ?? 50));
+  query.set("offset", String(filters.offset ?? 0));
+  return request<NewsResponse>(`/api/v1/news?${query}`, signal);
+}
+
+export function getSocialPosts(
+  filters: { asset?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<{ items: SocialPost[]; count: number }> {
+  const query = new URLSearchParams({ limit: String(filters.limit ?? 50) });
+  if (filters.asset) query.set("asset", filters.asset);
+  return request<{ items: SocialPost[]; count: number }>(`/api/social/posts?${query}`, signal);
+}
+
+export function getSocialStatistics(signal?: AbortSignal): Promise<SocialStatistics> {
+  return request<SocialStatistics>("/api/social/statistics", signal);
+}
+
+export function getSocialEvents(signal?: AbortSignal): Promise<{ items: SocialEvent[]; count: number }> {
+  return request("/api/social/events?limit=50", signal);
+}
+
+export function getSocialSources(signal?: AbortSignal): Promise<{ items: SocialSource[]; count: number }> {
+  return request("/api/social/sources?limit=100", signal);
+}
+
+export function getSocialAlertRules(signal?: AbortSignal): Promise<{ items: SocialAlertRule[] }> {
+  return request("/api/social/alert-rules", signal);
+}
+
+export function getSocialNotificationHistory(
+  signal?: AbortSignal,
+): Promise<{ items: SocialDelivery[]; count: number }> {
+  return request("/api/social/notification-history?limit=100", signal);
+}
+
+async function mutate<T>(
+  path: string,
+  method: "POST" | "PATCH" | "DELETE",
+  data?: object,
+): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: { Accept: "application/json", ...(data ? { "Content-Type": "application/json" } : {}) },
+    body: data ? JSON.stringify(data) : undefined,
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, `Market service returned ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export function createSocialSource(source: {
+  account_id: string;
+  username: string;
+  display_name: string;
+  category: string;
+}): Promise<SocialSource> {
+  return mutate<SocialSource>("/api/social/sources", "POST", source);
+}
+
+export function deactivateSocialSource(id: number): Promise<{ status: string }> {
+  return mutate<{ status: string }>(`/api/social/sources/${id}`, "DELETE");
+}
+
+export function createSocialAlertRule(rule: {
+  name: string;
+  minimum_score: number;
+  assets: string[];
+  categories: string[];
+  cooldown_seconds: number;
+  timezone: string;
+}): Promise<SocialAlertRule> {
+  return mutate<SocialAlertRule>("/api/social/alert-rules", "POST", rule);
+}
+
+export function getSocialHealth(signal?: AbortSignal) {
+  return request<{
+  status: string;
+  enabled: boolean;
+  configured: boolean;
+  last_success_at: string | null;
+  ai_status: "disabled" | "not_configured" | "configured";
+  notifications: Record<string, string>;
+  }>("/api/social/health", signal);
 }

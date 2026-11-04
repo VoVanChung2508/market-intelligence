@@ -32,8 +32,19 @@ def _notification_session() -> requests.Session:
 
 
 def send_notification(title, message, priority="default", sequence_id=None):
-    server = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    server = (
+        os.getenv("NTFY_BASE_URL", "").strip()
+        or os.getenv("NTFY_SERVER", "https://ntfy.sh")
+    ).rstrip("/")
     topic = os.getenv("NTFY_TOPIC", "").strip()
+
+    if os.getenv("NTFY_ENABLED", "true").strip().casefold() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return False
 
     if not topic:
         print("Chua cau hinh NTFY_TOPIC trong file .env")
@@ -75,4 +86,3 @@ if __name__ == "__main__":
         "Market AI: Kiem tra",
         "He thong thong bao dang hoat dong.",
     )
-

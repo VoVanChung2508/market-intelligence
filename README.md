@@ -4,7 +4,7 @@ Educational and research workspace for market data. It is not financial advice, 
 
 ## Current status
 
-This repository now has a local FastAPI/SQLite data API, a React dashboard, idempotent CSV import, provider adapters, a time-ordered AAPL baseline, ntfy price-move alerts, and a user-level systemd timer. This is a functioning research foundation, not the full product scope: news intelligence, portfolio simulation, backtesting, broad watchlists, and production security/performance certification remain incomplete.
+This repository has a local FastAPI/SQLite data API, a React dashboard, idempotent CSV import, market provider adapters, a time-ordered AAPL baseline, ntfy price-move alerts, RSS/Atom news collection and a heuristic crypto social monitor. Social Intelligence includes official X API v2 recent search, source/rule management APIs, event labeling, notification delivery history and a dashboard feed. Live X collection is disabled by default; AI analysis, portfolio simulation, backtesting, broad watchlists, and production security/performance certification remain incomplete.
 
 The existing CSVs remain in `data/raw/`. The new SQLite database, model, and evaluation artifacts are written under the ignored `data/processed/` directory. The current boundary-purged AAPL baseline failed its validation gate, so the dashboard withholds a direction signal.
 
@@ -12,7 +12,7 @@ The existing CSVs remain in `data/raw/`. The new SQLite database, model, and eva
 
 - Ubuntu/Linux, Python 3.14, Node.js 22, npm 9 or compatible.
 - No GPU or external database is required.
-- Network access is needed only for provider collection and ntfy delivery.
+- Network access is needed for market/news collection and optional ntfy delivery.
 
 ## Local setup
 
@@ -60,6 +60,16 @@ The collector stores crypto data from CoinGecko. Stock data is collected only wh
 
 Model training refuses to overwrite an existing versioned artifact. `baseline-logistic-v1` is retained as a superseded pre-purge evaluation; `baseline-logistic-v2` is the current boundary-purged evaluation. Create a new explicit version before retraining.
 
+To collect news, configure `MARKET_NEWS_FEEDS` in the private `.env` as a JSON array, for example:
+
+```dotenv
+MARKET_NEWS_FEEDS='[{"name":"Example Wire","url":"https://example.com/feed.xml"}]'
+```
+
+Then run `python -m backend.run_news_collector`. Only HTTPS RSS/Atom feeds are accepted; the command uses bounded requests, does not follow redirects, and stores feed-provided text only. Categories are deterministic keyword labels, not AI analysis. The news collector is manual and has no systemd timer yet.
+
+For social monitoring, review [docs/SOCIAL_INTELLIGENCE.md](docs/SOCIAL_INTELLIGENCE.md) and configure the X API and optional notification channels in `.env`. X and Telegram are disabled unless explicitly enabled, and no credentials are included in this repository. To run the worker manually, use `python -m backend.run_social_monitor`. Event labels are heuristics, claims are unverified, and the AI provider is not implemented. The social systemd unit is provided but is not enabled automatically.
+
 ## Verify
 
 ```bash
@@ -70,19 +80,21 @@ npm --prefix frontend run build
 npm --prefix frontend audit --omit=dev
 ```
 
-Observed on 2026-10-16: 16 Python tests pass; Vite production build passes; npm production dependency audit reports zero vulnerabilities; pip reports no broken requirements. See [docs/TEST_REPORT.md](docs/TEST_REPORT.md).
+Latest verification results are recorded in [docs/TEST_REPORT.md](docs/TEST_REPORT.md).
 
 ## Operations and recovery
 
 Use the user-level systemd units in `deploy/` after reviewing them. The collector timer runs every 30 minutes; the stock provider cooldown prevents the free Alpha Vantage quota from being consumed on every run. Commands, logs, SQLite backup/restore and limitations are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-The pre-existing tar archive in `backups/` includes `.env` and predates the current raw CSVs; keep it private and do not treat it as a current data restore point. A separate raw-only snapshot was verified on 2026-10-16. The workspace currently is not a Git repository, so there is no commit history or Git rollback.
+The repository is Git-managed. No backup archive is present in the current checkout; create and verify a SQLite backup before relying on recovery procedures.
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [API contract](docs/API.md)
 - [Data sources and limits](docs/DATA_SOURCES.md)
+- [News Intelligence](docs/NEWS_INTELLIGENCE.md)
+- [Crypto Social Intelligence](docs/SOCIAL_INTELLIGENCE.md)
 - [AI model report](docs/AI_MODEL_REPORT.md)
 - [Test report](docs/TEST_REPORT.md)
 - [Deployment and recovery](docs/DEPLOYMENT.md)

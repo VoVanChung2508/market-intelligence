@@ -1,11 +1,20 @@
 import csv
+import logging
+import os
 import sqlite3
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+LOGGER = logging.getLogger(__name__)
+
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS assets (
     symbol TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -65,6 +74,179 @@ CREATE TABLE IF NOT EXISTS alert_events (
 
 CREATE INDEX IF NOT EXISTS idx_alert_events_recent
     ON alert_events (timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS news_articles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_url TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    summary TEXT,
+    content TEXT,
+    published_at TEXT,
+    source TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    language TEXT,
+    category TEXT NOT NULL,
+    title_fingerprint TEXT NOT NULL,
+    content_fingerprint TEXT NOT NULL UNIQUE,
+    collected_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_articles_recent
+    ON news_articles (published_at DESC, collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_articles_category_recent
+    ON news_articles (category, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_articles_title_fingerprint
+    ON news_articles (title_fingerprint, published_at);
+
+CREATE TABLE IF NOT EXISTS news_article_assets (
+    article_id INTEGER NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL REFERENCES assets(symbol),
+    PRIMARY KEY (article_id, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_article_assets_symbol
+    ON news_article_assets (symbol, article_id);
+
+CREATE TABLE IF NOT EXISTS social_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    category TEXT NOT NULL CHECK (category IN (
+        'official_project', 'official_exchange', 'regulator', 'news',
+        'analyst', 'influencer', 'community', 'unknown'
+    )),
+    verified INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),
+    reputation_score REAL NOT NULL DEFAULT 50 CHECK (reputation_score BETWEEN 0 AND 100),
+    supported_assets TEXT NOT NULL DEFAULT '[]',
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_sources_active
+    ON social_sources (active, category, username);
+
+CREATE TABLE IF NOT EXISTS social_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_post_id TEXT NOT NULL UNIQUE,
+    source_id INTEGER REFERENCES social_sources(id),
+    text TEXT NOT NULL,
+    post_url TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    language TEXT,
+    is_repost INTEGER NOT NULL DEFAULT 0 CHECK (is_repost IN (0, 1)),
+    raw_payload TEXT NOT NULL,
+    processing_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (processing_status IN ('pending', 'processed', 'failed', 'irrelevant')),
+    collected_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_posts_recent
+    ON social_posts (published_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_social_posts_processing
+    ON social_posts (processing_status, collected_at);
+
+CREATE TABLE IF NOT EXISTS social_post_assets (
+    post_id INTEGER NOT NULL REFERENCES social_posts(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL REFERENCES assets(symbol),
+    PRIMARY KEY (post_id, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_post_assets_symbol
+    ON social_post_assets (symbol, post_id);
+
+CREATE TABLE IF NOT EXISTS social_event_clusters (
+    cluster_key TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    post_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS social_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key TEXT NOT NULL UNIQUE,
+    post_id INTEGER NOT NULL REFERENCES social_posts(id) ON DELETE CASCADE,
+    cluster_key TEXT NOT NULL REFERENCES social_event_clusters(cluster_key),
+    symbol TEXT,
+    category TEXT NOT NULL,
+    sentiment TEXT NOT NULL CHECK (sentiment IN ('positive', 'negative', 'neutral', 'mixed')),
+    impact_score REAL NOT NULL CHECK (impact_score BETWEEN 0 AND 100),
+    confidence_score REAL NOT NULL CHECK (confidence_score BETWEEN 0 AND 100),
+    source_reputation REAL NOT NULL CHECK (source_reputation BETWEEN 0 AND 100),
+    priority TEXT NOT NULL CHECK (priority IN ('critical', 'high', 'medium', 'low')),
+    priority_score REAL NOT NULL CHECK (priority_score BETWEEN 0 AND 100),
+    unverified_claim INTEGER NOT NULL CHECK (unverified_claim IN (0, 1)),
+    analysis_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_events_recent
+    ON social_events (created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_social_events_symbol_category
+    ON social_events (symbol, category, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_social_events_priority
+    ON social_events (priority, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS social_collection_state (
+    provider TEXT PRIMARY KEY,
+    since_id TEXT,
+    next_token TEXT,
+    status TEXT NOT NULL CHECK (status IN ('disabled', 'not_configured', 'idle', 'running', 'success', 'failed')),
+    last_started_at TEXT,
+    last_success_at TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS social_alert_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    minimum_score REAL NOT NULL DEFAULT 60 CHECK (minimum_score BETWEEN 0 AND 100),
+    assets TEXT NOT NULL DEFAULT '[]',
+    categories TEXT NOT NULL DEFAULT '[]',
+    cooldown_seconds INTEGER NOT NULL DEFAULT 900 CHECK (cooldown_seconds BETWEEN 0 AND 604800),
+    quiet_hours_start TEXT,
+    quiet_hours_end TEXT,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS social_alert_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES social_events(id) ON DELETE CASCADE,
+    rule_id INTEGER REFERENCES social_alert_rules(id) ON DELETE SET NULL,
+    alert_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (
+        status IN ('queued', 'sent', 'partial', 'failed', 'suppressed', 'not_configured')
+    ),
+    created_at TEXT NOT NULL,
+    acknowledged_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_alert_history_recent
+    ON social_alert_history (created_at DESC, status);
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id INTEGER NOT NULL REFERENCES social_alert_history(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL CHECK (channel IN ('ntfy', 'telegram')),
+    status TEXT NOT NULL CHECK (
+        status IN ('queued', 'sent', 'failed', 'not_configured', 'disabled')
+    ),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT,
+    delivered_at TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE (alert_id, channel)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_status
+    ON notification_deliveries (status, updated_at DESC);
 """
 
 ASSET_METADATA = {
@@ -93,6 +275,17 @@ def initialize_database(db_path: Path) -> None:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.executescript(SCHEMA)
         added_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) "
+            "VALUES (?, ?)",
+            ("2026-11-social-intelligence-v1", added_at),
+        )
+        for symbol, (name, asset_class, currency) in ASSET_METADATA.items():
+            connection.execute(
+                "INSERT OR IGNORE INTO assets (symbol, name, asset_class, currency) "
+                "VALUES (?, ?, ?, ?)",
+                (symbol, name, asset_class, currency),
+            )
         for coin_id, symbol, name in DEFAULT_CRYPTO_WATCHLIST:
             connection.execute(
                 "INSERT OR IGNORE INTO crypto_watchlist (coin_id, symbol, name, added_at) "
@@ -104,9 +297,26 @@ def initialize_database(db_path: Path) -> None:
                 "VALUES (?, ?, 'crypto', 'USD')",
                 (symbol, name),
             )
+        connection.execute(
+            "INSERT OR IGNORE INTO social_alert_rules "
+            "(name, minimum_score, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("default-social-alert", _social_minimum_score(), added_at, added_at),
+        )
         connection.commit()
     finally:
         connection.close()
+
+
+def _social_minimum_score() -> float:
+    try:
+        score = float(os.getenv("SOCIAL_ALERT_MIN_SCORE", "60"))
+    except ValueError:
+        LOGGER.warning("invalid_social_alert_min_score; using default")
+        return 60.0
+    if not 0 <= score <= 100:
+        LOGGER.warning("invalid_social_alert_min_score; using default")
+        return 60.0
+    return score
 
 
 def get_crypto_watchlist(db_path: Path) -> list[dict[str, str]]:
@@ -401,5 +611,147 @@ def get_alert_events(db_path: Path, limit: int = 100) -> list[dict[str, object]]
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def store_news_articles(
+    db_path: Path,
+    articles: list[dict[str, object]],
+) -> int:
+    if not articles:
+        return 0
+
+    connection = connect(db_path)
+    inserted = 0
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        for article in articles:
+            published_at = article["published_at"]
+            if connection.execute(
+                "SELECT 1 FROM news_articles WHERE canonical_url = ? "
+                "OR content_fingerprint = ? LIMIT 1",
+                (article["canonical_url"], article["content_fingerprint"]),
+            ).fetchone():
+                continue
+            if published_at is not None and connection.execute(
+                "SELECT 1 FROM news_articles "
+                "WHERE title_fingerprint = ? AND date(published_at) = date(?) "
+                "LIMIT 1",
+                (article["title_fingerprint"], published_at),
+            ).fetchone():
+                continue
+
+            cursor = connection.execute(
+                "INSERT INTO news_articles "
+                "(canonical_url, title, summary, content, published_at, source, "
+                "source_url, language, category, title_fingerprint, "
+                "content_fingerprint, collected_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    article["canonical_url"],
+                    article["title"],
+                    article["summary"],
+                    article["content"],
+                    published_at,
+                    article["source"],
+                    article["source_url"],
+                    article["language"],
+                    article["category"],
+                    article["title_fingerprint"],
+                    article["content_fingerprint"],
+                    article["collected_at"],
+                ),
+            )
+            article_id = cursor.lastrowid
+            for symbol in article["related_assets"]:
+                connection.execute(
+                    "INSERT OR IGNORE INTO news_article_assets (article_id, symbol) "
+                    "VALUES (?, ?)",
+                    (article_id, symbol),
+                )
+            inserted += 1
+        connection.commit()
+        return inserted
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _news_article_with_assets(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> dict[str, object]:
+    article = dict(row)
+    article["related_assets"] = [
+        asset["symbol"]
+        for asset in connection.execute(
+            "SELECT symbol FROM news_article_assets "
+            "WHERE article_id = ? ORDER BY symbol",
+            (article["id"],),
+        ).fetchall()
+    ]
+    return article
+
+
+def get_news_articles(
+    db_path: Path,
+    *,
+    query: str | None = None,
+    category: str | None = None,
+    asset: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, object]], int]:
+    clauses: list[str] = []
+    parameters: list[object] = []
+    if query:
+        escaped_query = query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        clauses.append(
+            "(title LIKE ? ESCAPE '!' OR summary LIKE ? ESCAPE '!' "
+            "OR content LIKE ? ESCAPE '!')"
+        )
+        parameters.extend([f"%{escaped_query}%"] * 3)
+    if category:
+        clauses.append("category = ?")
+        parameters.append(category)
+    if asset:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM news_article_assets na "
+            "WHERE na.article_id = news_articles.id AND na.symbol = ?)"
+        )
+        parameters.append(asset)
+
+    where_clause = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    connection = connect(db_path)
+    try:
+        count = connection.execute(
+            f"SELECT COUNT(*) FROM news_articles{where_clause}",
+            parameters,
+        ).fetchone()[0]
+        rows = connection.execute(
+            "SELECT id, canonical_url AS url, title, summary, content, "
+            "published_at, source, language, category, collected_at "
+            f"FROM news_articles{where_clause} "
+            "ORDER BY published_at DESC, collected_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*parameters, limit, offset],
+        ).fetchall()
+        return [_news_article_with_assets(connection, row) for row in rows], count
+    finally:
+        connection.close()
+
+
+def get_news_article(db_path: Path, article_id: int) -> dict[str, object] | None:
+    connection = connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT id, canonical_url AS url, title, summary, content, "
+            "published_at, source, language, category, collected_at "
+            "FROM news_articles WHERE id = ?",
+            (article_id,),
+        ).fetchone()
+        return _news_article_with_assets(connection, row) if row else None
     finally:
         connection.close()

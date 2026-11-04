@@ -1,20 +1,20 @@
 # Test Report
 
-Run date: 2026-10-16. Only listed checks were run; this is not a security certification.
+Run date: 2026-11-04. This records checks actually run in this workspace; it is not a security certification.
 
-| Check | Expected | Observed | Result |
-|---|---|---|---|
-| Python API/collector/alert/analysis suite (`.venv/bin/python -m pytest -q`) | Unit and integration tests pass offline | 16 passed, no warnings | PASS |
-| Python dependency consistency (`.venv/bin/python -m pip check`) | No broken requirements | No broken requirements found | PASS |
-| Frontend strict production build (`npm --prefix frontend run build`) | TypeScript and Vite build pass | Build completed | PASS |
-| Production npm dependency audit (`npm --prefix frontend audit --omit=dev`) | No known production dependency advisories | 0 vulnerabilities | PASS |
-| AppTest on existing Streamlit dashboard | Renders without app exceptions | 3 metrics, dataframe and selector; deprecated `use_container_width` warning | PASS with warning |
-| Live local API smoke test | Health and real imported data respond | `/healthz` 200; BTC/ETH/AAPL bars returned; stale/fresh state matched timestamps | PASS |
-| Live CoinGecko collector | Store current crypto values and log job | BTC and ETH each inserted 3 new bars; API showed fresh; raw CSV unchanged | PASS |
-| Browser desktop/mobile smoke | No overflow, real API values, analysis gate visible | 1280px and 390px body widths match viewport; AAPL gate/empty model state correct; no page or console errors | PASS |
-| ntfy delivery | Mock or test endpoint | Mocked/unconfigured path only; no real notification sent | NOT RUN live |
-| systemd timer after reboot | Persists and executes on schedule | Unit files supplied; service has not been enabled/reboot-tested | NOT RUN |
-| systemd unit syntax | Service/timer files parse | `systemd-analyze verify` returned no diagnostics | PASS |
-| Full security/performance/E2E audit | Auth, CORS, XSS, dependency, load, restore | Static review and limited local integration only | NOT RUN |
+| Check | Observed | Result |
+|---|---|---|
+| Python suite (`PYTHONPATH=. .venv/bin/pytest -q`) | 34 passed, including market, alerts, news and social coverage | PASS |
+| Python dependency consistency (`.venv/bin/python -m pip check`) | No broken requirements | PASS |
+| Frontend strict production build (`npm --prefix frontend run build`) | TypeScript and Vite build completed | PASS |
+| Production npm dependency audit (`npm --prefix frontend audit --omit=dev`) | 0 vulnerabilities | PASS |
+| Patch whitespace check (`git diff --check`) | No errors | PASS |
+| systemd social service unit (`systemd-analyze verify`) | Unit syntax validated | PASS |
+| News and social parser/provider/API tests | Deterministic fixtures and mocked providers; no external provider was contacted | PASS |
+| Retry behavior | Failed notification retried after configured delay; attempt and delivery status verified | PASS |
+| Browser dashboard/API smoke test | Social page loaded from an isolated empty SQLite DB; Feed, Events, Sources, Alert rules and Deliveries tabs rendered; at 375px, body width matched viewport | PASS |
+| Live X/news collection or notification delivery | Not run; credentials/providers were not exercised and no real messages were sent | NOT RUN |
+| systemd worker runtime or reboot behavior | Unit was syntax-checked only; service was not enabled or started | NOT RUN |
+| Full security, load, and recovery audit | Not run | NOT RUN |
 
-The suite count includes API, collector/provider parser, stock rate cooldown, alert threshold/deduplication, mocked ntfy sender/redaction, feature/label alignment, purged chronological split and insufficient-history cases. The timer has not been enabled or reboot-tested. Final browser checks covered Overview, AI Analysis and Alerts at desktop/mobile widths with no failed requests, console errors, or uncaught page errors.
+Browser smoke testing used the expected API-unavailable state; successful live API-to-browser rendering was not tested. The API remains unauthenticated and is intended for loopback use only. The suite does not certify external provider quotas, terms, or delivery behavior.

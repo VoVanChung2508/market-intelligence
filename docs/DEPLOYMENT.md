@@ -25,7 +25,7 @@ For the hot-reload frontend, run `npm --prefix frontend run dev -- --host 127.0.
 
 ## User systemd
 
-Review `deploy/market-api.service`, `deploy/market-collector.service`, and `deploy/market-collector.timer` before installing. These run as the logged-in user and keep the API loopback-only.
+Review `deploy/market-api.service`, `deploy/market-collector.service`, `deploy/market-collector.timer`, and (if needed) `deploy/market-social-monitor.service` before installing. These run as the logged-in user; the API stays loopback-only.
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -50,6 +50,8 @@ systemctl --user stop market-collector.timer market-api.service
 
 The collector timer runs every 30 minutes. Alpha Vantage attempts are additionally guarded by a 20-hour cooldown. ntfy alerts only trigger when a new adjacent bar crosses the configured absolute move threshold; delivery is deduplicated per source bar.
 
+The social monitor unit is separate and is not included in the commands above. Install and start it only after reviewing [SOCIAL_INTELLIGENCE.md](./SOCIAL_INTELLIGENCE.md), confirming the `.env` permissions, and explicitly configuring X access. `X_API_ENABLED` defaults to false. The monitor polls at its configured interval and locks against duplicate worker processes. The social APIs are unauthenticated, and test-notification requests can send real messages; do not expose the API beyond loopback.
+
 ## Backup and restore
 
 Create a consistent SQLite backup while the service is running using SQLite's backup command. Choose a new filename; do not overwrite an existing backup.
@@ -69,8 +71,8 @@ systemctl --user start market-api.service market-collector.timer
 curl --fail http://127.0.0.1:8000/healthz
 ```
 
-Model artifacts and reports are separate files under `data/processed/models/`; back them up alongside SQLite. Raw CSVs under `data/raw/` are retained separately and are not changed by the new pipeline. A raw-only snapshot at `backups/raw_snapshot_20261016.tar.gz` was created and SHA-256-verified against the current CSVs. The older pre-existing tar archive contains `.env` and predates the current raw data; treat it as secret material and do not use it as the latest data restore point or publish it.
+Model artifacts and reports are separate files under `data/processed/models/`; back them up alongside SQLite. Raw CSVs under `data/raw/` are retained separately and are not changed by the new pipeline. The current checkout does not contain a `backups/` directory, so create and verify backups before relying on recovery procedures. Any archive that contains `.env` must be treated as secret material and must not be published.
 
 ## Limitations
 
-This is a personal-machine service. Sleep, power loss, network interruptions and user-session policy stop collection. systemd persistent timers can catch up after downtime, but provider rate limits still apply. No remote access, public deployment, authentication, HTTPS termination, log rotation, or independent off-device backup is configured.
+This is a personal-machine service. Sleep, power loss, network interruptions and user-session policy stop collection. systemd persistent timers can catch up after downtime, but provider rate limits still apply. News collection is a separate manual command and has no systemd timer. Social collection is a separate optional worker. No remote access, public deployment, authentication, HTTPS termination, log rotation, or independent off-device backup is configured.
