@@ -6,7 +6,7 @@ The social monitor collects public posts through the official X API v2 recent-se
 
 The AI adapter contract and response schema are present, but no model provider is implemented. The API reports AI as `not_configured` when enabled (the example setting) or `disabled` when `SOCIAL_AI_ENABLED=false`; it does not fabricate summaries. X collection and notification channels are disabled or unconfigured until explicitly configured.
 
-The API is unauthenticated and intended for loopback use only. The test-notification endpoint sends a real notification when the selected channel is enabled and configured. Do not expose this service to a network or public internet without authentication, access control, and a reviewed deployment design.
+The API requires bearer authentication and is intended for loopback use only. The test-notification endpoint sends a real notification when the selected channel is enabled and configured. Do not expose this service to a network or public internet without a reviewed deployment design and additional edge protections.
 
 ## Configuration
 

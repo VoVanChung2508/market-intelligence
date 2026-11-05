@@ -3,18 +3,33 @@ import json
 import os
 import re
 import sqlite3
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlite3 import IntegrityError
 
+from backend.auth import (
+    AccountConflictError,
+    authenticate,
+    authenticate_access_token,
+    create_user,
+    list_audit_logs,
+    list_ntfy_command_audit,
+    list_users,
+    refresh_session,
+    revoke_session,
+    update_user,
+)
 from backend.database import (
     get_alert_events,
     get_collection_runs,
@@ -119,6 +134,27 @@ class SocialTestNotificationRequest(BaseModel):
     channel: Literal["ntfy", "telegram"]
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=48)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=32, max_length=200)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=48)
+    password: str = Field(min_length=12, max_length=128)
+    role: Literal["ADMIN", "USER", "READ_ONLY"] = "USER"
+
+
+class UserUpdateRequest(BaseModel):
+    role: Literal["ADMIN", "USER", "READ_ONLY"] | None = None
+    active: bool | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=128)
+
+
 def create_app(
     db_path: Path | None = None,
     data_dir: Path | None = None,
@@ -150,16 +186,219 @@ def create_app(
     app.state.db_path = resolved_db_path
     app.state.data_dir = resolved_data_dir
     app.state.import_result = import_result
+    allowed_origins = [
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ALLOWED_ORIGINS",
+            "http://127.0.0.1:5173,http://localhost:5173",
+        ).split(",")
+        if origin.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
-        ],
+        allow_origins=allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Accept", "Content-Type"],
+        allow_headers=["Accept", "Authorization", "Content-Type"],
     )
+
+    rate_buckets: dict[tuple[str, str], deque[float]] = {}
+
+    @app.middleware("http")
+    async def security_middleware(request: Request, call_next):
+        response: JSONResponse
+        path = request.url.path
+        if path.startswith("/api/"):
+            now = time.monotonic()
+            client_host = request.client.host if request.client else "unknown"
+            bucket_name = "login" if path == "/api/auth/login" else "api"
+            bucket_key = (client_host, bucket_name)
+            bucket = rate_buckets.setdefault(bucket_key, deque())
+            window_seconds = 60.0
+            while bucket and now - bucket[0] >= window_seconds:
+                bucket.popleft()
+            if len(bucket) >= (10 if bucket_name == "login" else 120):
+                response = JSONResponse(
+                    {"detail": "Too many requests; try again later"},
+                    status_code=429,
+                    headers={"Retry-After": "60"},
+                )
+            else:
+                bucket.append(now)
+                if len(rate_buckets) > 10_000:
+                    for key in list(rate_buckets)[:1_000]:
+                        rate_buckets.pop(key, None)
+
+                public_auth_paths = {"/api/auth/login", "/api/auth/refresh"}
+                if request.method == "OPTIONS" or path in public_auth_paths:
+                    response = await call_next(request)
+                else:
+                    authorization = request.headers.get("authorization", "")
+                    scheme, _, token = authorization.partition(" ")
+                    if scheme.casefold() != "bearer" or not token:
+                        response = JSONResponse(
+                            {"detail": "Authentication required"},
+                            status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"},
+                        )
+                    else:
+                        try:
+                            principal = authenticate_access_token(resolved_db_path, token)
+                        except RuntimeError as exc:
+                            logger.error("Authentication configuration error: %s", str(exc))
+                            response = JSONResponse(
+                                {"detail": "Authentication is not configured"},
+                                status_code=503,
+                            )
+                        except sqlite3.Error as exc:
+                            logger.error("Authentication database error: %s", type(exc).__name__)
+                            response = JSONResponse(
+                                {"detail": "Authentication service unavailable"},
+                                status_code=503,
+                            )
+                        else:
+                            if principal is None:
+                                response = JSONResponse(
+                                    {"detail": "Invalid or expired access token"},
+                                    status_code=401,
+                                    headers={"WWW-Authenticate": "Bearer"},
+                                )
+                            elif (
+                                request.method not in {"GET", "HEAD", "OPTIONS"}
+                                and principal["role"] == "READ_ONLY"
+                                and path != "/api/auth/logout"
+                            ):
+                                response = JSONResponse(
+                                    {"detail": "Read-only accounts cannot modify data"},
+                                    status_code=403,
+                                )
+                            else:
+                                request.state.principal = principal
+                                response = await call_next(request)
+        else:
+            response = await call_next(request)
+
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; object-src 'none'; frame-ancestors 'none'; "
+            "base-uri 'self'; form-action 'self'",
+        )
+        if path.startswith("/api/auth/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def require_admin(request: Request) -> dict[str, object]:
+        principal = getattr(request.state, "principal", None)
+        if principal is None or principal["role"] != "ADMIN":
+            raise HTTPException(status_code=403, detail="Administrator role required")
+        return principal
+
+    @app.post("/api/auth/login")
+    def login(request: LoginRequest) -> dict[str, object]:
+        try:
+            tokens = authenticate(resolved_db_path, request.username, request.password)
+        except RuntimeError as exc:
+            logger.error("Authentication configuration error: %s", str(exc))
+            raise HTTPException(status_code=503, detail="Authentication is not configured") from exc
+        if tokens is None:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        return tokens
+
+    @app.post("/api/auth/refresh")
+    def refresh(request: RefreshRequest) -> dict[str, object]:
+        try:
+            tokens = refresh_session(resolved_db_path, request.refresh_token)
+        except RuntimeError as exc:
+            logger.error("Authentication configuration error: %s", str(exc))
+            raise HTTPException(status_code=503, detail="Authentication is not configured") from exc
+        if tokens is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+        return tokens
+
+    @app.get("/api/auth/me")
+    def current_user(request: Request) -> dict[str, object]:
+        principal = request.state.principal
+        return {
+            "id": principal["id"],
+            "username": principal["username"],
+            "role": principal["role"],
+        }
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request) -> dict[str, str]:
+        principal = request.state.principal
+        revoke_session(
+            resolved_db_path,
+            str(principal["session_id"]),
+            int(principal["id"]),
+        )
+        return {"status": "logged_out"}
+
+    @app.get("/api/auth/users")
+    def users(request: Request) -> dict[str, object]:
+        require_admin(request)
+        return {"items": list_users(resolved_db_path)}
+
+    @app.post("/api/auth/users", status_code=201)
+    def add_user(request: Request, body: UserCreateRequest) -> dict[str, object]:
+        principal = require_admin(request)
+        try:
+            return create_user(
+                resolved_db_path,
+                body.username,
+                body.password,
+                body.role,
+                actor_user_id=int(principal["id"]),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AccountConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.patch("/api/auth/users/{user_id}")
+    def patch_user(
+        user_id: int,
+        request: Request,
+        body: UserUpdateRequest,
+    ) -> dict[str, object]:
+        principal = require_admin(request)
+        values = body.model_dump(exclude_unset=True)
+        try:
+            updated = update_user(
+                resolved_db_path,
+                user_id,
+                **values,
+                actor_user_id=int(principal["id"]),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        return updated
+
+    @app.get("/api/auth/audit")
+    def audit_logs(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0, le=100000),
+    ) -> dict[str, object]:
+        require_admin(request)
+        items, count = list_audit_logs(resolved_db_path, limit=limit, offset=offset)
+        return {"items": items, "count": count, "limit": limit, "offset": offset}
+
+    @app.get("/api/auth/command-audit")
+    def command_audit_logs(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0, le=100000),
+    ) -> dict[str, object]:
+        require_admin(request)
+        items, count = list_ntfy_command_audit(resolved_db_path, limit=limit, offset=offset)
+        return {"items": items, "count": count, "limit": limit, "offset": offset}
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -459,15 +698,17 @@ def create_app(
 
     @app.post("/api/social/test-notification")
     def social_test_notification(
-        request: SocialTestNotificationRequest,
+        request: Request,
+        body: SocialTestNotificationRequest,
     ) -> dict[str, object]:
-        result = test_social_notification(resolved_db_path, request.channel)
+        require_admin(request)
+        result = test_social_notification(resolved_db_path, body.channel)
         if result["status"] == "not_configured":
-            raise HTTPException(status_code=409, detail=f"{request.channel} is not configured")
+            raise HTTPException(status_code=409, detail=f"{body.channel} is not configured")
         if result["status"] == "disabled":
-            raise HTTPException(status_code=409, detail=f"{request.channel} notifications are disabled")
+            raise HTTPException(status_code=409, detail=f"{body.channel} notifications are disabled")
         if result["status"] != "sent":
-            raise HTTPException(status_code=502, detail=f"{request.channel} delivery failed")
+            raise HTTPException(status_code=502, detail=f"{body.channel} delivery failed")
         return result
 
     @app.get("/api/social/notification-history")

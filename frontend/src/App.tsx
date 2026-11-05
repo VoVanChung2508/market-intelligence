@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Bell,
   ChartNoAxesCombined,
-  ChevronDown,
   CircleHelp,
   Database,
   FlaskConical,
@@ -34,6 +33,10 @@ import {
   getSocialPosts,
   getSocialSources,
   getSocialStatistics,
+  login as loginApi,
+  logout as logoutApi,
+  restoreSession,
+  type AuthUser,
   type AnalysisReport,
   type AnalysisResponse,
   type AlertEvent,
@@ -68,6 +71,7 @@ const navigation = [
 ];
 
 type LoadState = "loading" | "ready" | "error";
+type AuthState = "checking" | "authenticated" | "unauthenticated";
 
 function formatPrice(price: number | null, currency: string): string {
   if (price === null || !Number.isFinite(price)) return "--";
@@ -99,6 +103,9 @@ function changeLabel(change: number | null): string {
 }
 
 function App() {
+  const [authState, setAuthState] = useState<AuthState>("checking");
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [authError, setAuthError] = useState("");
   const [activePage, setActivePage] = useState("Overview");
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
@@ -127,6 +134,34 @@ function App() {
   const selectedAsset = assets.find((asset) => asset.symbol === selectedSymbol) ?? assets[0];
 
   useEffect(() => {
+    let active = true;
+    restoreSession()
+      .then((user) => {
+        if (!active) return;
+        setCurrentUser(user);
+        setAuthState(user ? "authenticated" : "unauthenticated");
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setAuthError(error instanceof Error ? error.message : "Could not restore the session.");
+        setAuthState("unauthenticated");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    function expireSession() {
+      setCurrentUser(null);
+      setAuthState("unauthenticated");
+    }
+    window.addEventListener("auth-expired", expireSession);
+    return () => window.removeEventListener("auth-expired", expireSession);
+  }, []);
+
+  useEffect(() => {
+    if (authState !== "authenticated") return;
     const controller = new AbortController();
     setLoadState("loading");
     setErrorMessage("");
@@ -146,10 +181,10 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [refreshKey]);
+  }, [authState, refreshKey]);
 
   useEffect(() => {
-    if (!selectedSymbol || loadState !== "ready") return;
+    if (authState !== "authenticated" || !selectedSymbol || loadState !== "ready") return;
     const controller = new AbortController();
 
     getPriceBars(
@@ -163,10 +198,10 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [loadState, selectedAsset?.asset_class, selectedSymbol]);
+  }, [authState, loadState, selectedAsset?.asset_class, selectedSymbol]);
 
   useEffect(() => {
-    if (activePage !== "AI analysis" || !selectedSymbol) return;
+    if (authState !== "authenticated" || activePage !== "AI analysis" || !selectedSymbol) return;
     const controller = new AbortController();
     setAnalysisState("loading");
     setAnalysisError("");
@@ -189,10 +224,10 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [activePage, selectedSymbol]);
+  }, [activePage, authState, selectedSymbol]);
 
   useEffect(() => {
-    if (activePage !== "Alerts") return;
+    if (authState !== "authenticated" || activePage !== "Alerts") return;
     const controller = new AbortController();
     setAlertsState("loading");
     getAlerts(controller.signal)
@@ -207,10 +242,10 @@ function App() {
         setAlertsError(error instanceof Error ? error.message : "Alert history is unavailable.");
       });
     return () => controller.abort();
-  }, [activePage]);
+  }, [activePage, authState]);
 
   useEffect(() => {
-    if (activePage !== "Social intelligence") return;
+    if (authState !== "authenticated" || activePage !== "Social intelligence") return;
     const controller = new AbortController();
     setSocialState("loading");
     setSocialError("");
@@ -239,12 +274,41 @@ function App() {
         setSocialError(error instanceof Error ? error.message : "Social intelligence is unavailable.");
       });
     return () => controller.abort();
-  }, [activePage, socialAsset, socialRefreshKey]);
+  }, [activePage, authState, socialAsset, socialRefreshKey]);
+
+  async function handleLogin(username: string, password: string): Promise<void> {
+    setAuthError("");
+    const user = await loginApi(username, password);
+    setCurrentUser(user);
+    setAuthState("authenticated");
+  }
+
+  async function handleLogout(): Promise<void> {
+    setAuthError("");
+    try {
+      await logoutApi();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not complete sign out.");
+    } finally {
+      setCurrentUser(null);
+      setAuthState("unauthenticated");
+    }
+  }
 
   const servicesAvailable = overview?.services.filter(
     (service) => service.status === "healthy",
   ).length ?? 0;
   const plannedPages = navigation.filter((item) => item.planned).map((item) => item.label);
+
+  if (authState !== "authenticated" || !currentUser) {
+    return (
+      <AuthenticationScreen
+        checking={authState === "checking"}
+        error={authError}
+        onLogin={handleLogin}
+      />
+    );
+  }
 
   return (
     <div className="app-frame">
@@ -299,8 +363,10 @@ function App() {
             <button className="icon-button" title="Refresh market data" aria-label="Refresh market data" type="button" onClick={() => setRefreshKey((key) => key + 1)}>
               <Activity size={17} />
             </button>
-            <button className="user-button" type="button" aria-label="Workspace menu">
-              <span className="avatar">MI</span><ChevronDown size={14} />
+            <button className="user-button" type="button" onClick={() => void handleLogout()}>
+              <span className="avatar">{currentUser.username.slice(0, 2).toUpperCase()}</span>
+              <span>{currentUser.username}</span>
+              <span className="sign-out-label">Sign out</span>
             </button>
           </div>
         </header>
@@ -391,6 +457,79 @@ function App() {
         </div>
       </main>
     </div>
+  );
+}
+
+function AuthenticationScreen({
+  checking,
+  error,
+  onLogin,
+}: {
+  checking: boolean;
+  error: string;
+  onLogin: (username: string, password: string) => Promise<void>;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setFormError("");
+    setSubmitting(true);
+    try {
+      await onLogin(username, password);
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : "Sign in failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="auth-page">
+      <section className="auth-card" aria-labelledby="auth-title">
+        <div className="brand-mark" aria-hidden="true">MI</div>
+        <p className="eyebrow">Market Intelligence</p>
+        <h1 id="auth-title">Sign in</h1>
+        <p className="auth-description">
+          {checking ? "Checking your local session..." : "Sign in to access your local market workspace."}
+        </p>
+        {!checking && (
+          <form className="auth-form" onSubmit={(event) => void submit(event)}>
+            <label>
+              Username
+              <input
+                autoComplete="username"
+                required
+                minLength={3}
+                maxLength={48}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+              />
+            </label>
+            <label>
+              Password
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                maxLength={128}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+            {(formError || error) && (
+              <p className="auth-error" role="alert">{formError || error}</p>
+            )}
+            <button className="auth-submit" type="submit" disabled={submitting}>
+              {submitting ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+        )}
+      </section>
+    </main>
   );
 }
 

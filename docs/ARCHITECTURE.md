@@ -18,6 +18,10 @@ flowchart LR
   ART --> API
   DB --> ALERT[Threshold alert evaluator]
   ALERT --> NTFY[ntfy]
+  NTFY --> CMD[Signed command listener]
+  CMD --> DB
+  CMD --> COLLECTOR[Allowlisted collector job]
+  CMD --> BACKUP[Verified SQLite backup]
   NC --> DB
   TIMER[systemd user timer] --> C
 ```
@@ -32,6 +36,8 @@ The deployment is local-first: no PostgreSQL, Docker, GPU, Redis, or external qu
 - `backend/alerts.py`: interval-move rule, deduplication, ntfy delivery status.
 - `backend/news.py` and `backend/run_news_collector.py`: configurable RSS/Atom feed adapter, bounded fetch, normalization, deterministic categorization, asset matching and deduplication.
 - `backend/api.py`: health, overview, assets, bars, job history, alerts, news, model report, and built frontend.
+- `backend/auth.py`: Argon2 credential hashing, signed access tokens, rotating persisted refresh sessions, RBAC, CLI account bootstrap and audit records.
+- `backend/command_listener.py`: optional HTTPS ntfy subscriber; verifies HMAC, timestamp, admin identity and persistent nonce before dispatching allowlisted read commands, market collection or SQLite backup.
 - `frontend/src/`: typed API client, navigation, tables, chart, market/service/AI/alert/news states.
 - `deploy/`: systemd user service/timer templates.
 
@@ -43,6 +49,8 @@ erDiagram
   ASSETS ||--o{ ALERT_EVENTS : triggers
   NEWS_ARTICLES ||--o{ NEWS_ARTICLE_ASSETS : mentions
   ASSETS ||--o{ NEWS_ARTICLE_ASSETS : mentioned_in
+  AUTH_USERS ||--o{ AUTH_SESSIONS : owns
+  AUTH_USERS ||--o{ AUDIT_LOGS : acts
   ASSETS {
     text symbol PK
     text name
@@ -97,6 +105,28 @@ erDiagram
     integer article_id FK
     text symbol FK
   }
+  AUTH_USERS {
+    integer id PK
+    text username UK
+    text password_hash
+    text role
+    integer active
+  }
+  AUTH_SESSIONS {
+    text id PK
+    integer user_id FK
+    text refresh_token_hash
+    text expires_at
+    text revoked_at
+  }
+  AUDIT_LOGS {
+    integer id PK
+    integer actor_user_id FK
+    integer target_user_id FK
+    text action
+    text outcome
+    text occurred_at
+  }
 ```
 
 Prices use UTC ISO-8601 timestamps. The key `(symbol, interval, timestamp, source)` makes ingestion append-only and idempotent; conflicts are ignored rather than overwriting historical values. SQLite WAL and a busy timeout support concurrent dashboard reads while a scheduled writer runs.
@@ -111,4 +141,6 @@ News feed failures are isolated per feed. RSS/Atom requests require HTTPS, have 
 
 ## Security boundary
 
-The API has no login/authentication and is safe only as a local research tool while loopback-bound. CORS permits the two local Vite origins and GET only. Provider secrets are loaded from environment/`.env`, not source or responses. Parameterized SQL is used for request-controlled filters. Do not expose port 8000 to a LAN or public network without adding authentication, authorization, TLS, request limits, and security review.
+Data APIs require bearer authentication. Passwords are Argon2-hashed; access tokens are signed and short-lived, and high-entropy refresh tokens are rotated, persisted as hashes, and revocable per session. `ADMIN`, `USER` and `READ_ONLY` roles are enforced; user administration and real test-notification delivery require ADMIN. Authentication and account changes are audited. Login and API requests have per-process IP rate limits. Health, login and refresh remain public. CORS uses a local-origin allowlist by default, and security headers are applied to responses.
+
+The API is still intended for loopback use only. Rate limits are process-local and are not shared across workers. Browser refresh credentials live in session storage, so this application does not claim protection against same-origin script compromise. Provider secrets are loaded from environment/`.env`, not source or responses. Parameterized SQL is used for request-controlled filters. Do not expose port 8000 to a LAN or public network without TLS, deployment-specific access controls, shared rate limiting, and security review.
