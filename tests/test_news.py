@@ -3,6 +3,7 @@ import asyncio
 import httpx
 import pytest
 
+from backend.auth import create_user, list_users
 from backend.api import create_app
 from backend.database import (
     get_news_articles,
@@ -32,6 +33,8 @@ RSS_DOCUMENT = b"""<?xml version="1.0"?>
   </channel>
 </rss>
 """
+
+TEST_PASSWORD = "market-intelligence-test-password"
 
 ATOM_DOCUMENT = b"""<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
@@ -212,16 +215,33 @@ def test_news_api_search_asset_category_and_detail(tmp_path):
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
+                if not list_users(app.state.db_path):
+                    create_user(
+                        app.state.db_path,
+                        "test-admin",
+                        TEST_PASSWORD,
+                        "ADMIN",
+                    )
+                login = await client.post(
+                    "/api/auth/login",
+                    json={"username": "test-admin", "password": TEST_PASSWORD},
+                )
+                headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
                 listing = await client.get(
                     "/api/v1/news",
                     params={"q": "quarterly", "asset": "aapl", "category": "earnings"},
+                    headers=headers,
                 )
-                missing = await client.get("/api/v1/news/999")
+                missing = await client.get("/api/v1/news/999", headers=headers)
                 invalid_category = await client.get(
                     "/api/v1/news",
                     params={"category": "untrusted"},
+                    headers=headers,
                 )
-                detail = await client.get(f"/api/v1/news/{listing.json()['items'][0]['id']}")
+                detail = await client.get(
+                    f"/api/v1/news/{listing.json()['items'][0]['id']}",
+                    headers=headers,
+                )
                 return listing, missing, invalid_category, detail
 
     listing, missing, invalid_category, detail = asyncio.run(request())

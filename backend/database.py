@@ -247,6 +247,72 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_status
     ON notification_deliveries (status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS auth_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('ADMIN', 'USER', 'READ_ONLY')),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+    refresh_token_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
+    ON auth_sessions (user_id, revoked_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
+    token_hash TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES auth_sessions(id) ON DELETE CASCADE,
+    consumed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_session
+    ON auth_refresh_tokens (session_id);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id INTEGER REFERENCES auth_users(id) ON DELETE SET NULL,
+    target_user_id INTEGER REFERENCES auth_users(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    occurred_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_recent
+    ON audit_logs (occurred_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS ntfy_command_nonces (
+    nonce TEXT PRIMARY KEY,
+    actor_user_id INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+    command TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ntfy_command_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id INTEGER REFERENCES auth_users(id) ON DELETE SET NULL,
+    command TEXT NOT NULL,
+    nonce TEXT UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'rejected')),
+    error_code TEXT,
+    result_summary TEXT,
+    received_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ntfy_command_audit_recent
+    ON ntfy_command_audit (received_at DESC, id DESC);
 """
 
 ASSET_METADATA = {
@@ -279,6 +345,16 @@ def initialize_database(db_path: Path) -> None:
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) "
             "VALUES (?, ?)",
             ("2026-11-social-intelligence-v1", added_at),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) "
+            "VALUES (?, ?)",
+            ("2026-11-authentication-v1", added_at),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) "
+            "VALUES (?, ?)",
+            ("2026-11-ntfy-command-center-v1", added_at),
         )
         for symbol, (name, asset_class, currency) in ASSET_METADATA.items():
             connection.execute(

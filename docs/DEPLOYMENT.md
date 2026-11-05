@@ -12,7 +12,7 @@ npm --prefix frontend ci
 npm --prefix frontend run build
 ```
 
-Do not replace an existing `.env`. For a new install, copy `.env.example` only if `.env` does not exist, edit it locally, and run `chmod 600 .env`. The Alpha Vantage API key is optional; without it, AAPL network collection is skipped. ntfy is optional; without a topic, alerts are recorded as `not_configured` and no request is sent.
+Do not replace an existing `.env`. For a new install, copy `.env.example` only if `.env` does not exist, edit it locally, and run `chmod 600 .env`. Set `AUTH_TOKEN_SECRET` to a private random value of at least 32 characters before using the API. Create the first ADMIN with `python -m backend.auth bootstrap-admin --username admin`; the CLI securely prompts for a password and stores only an Argon2 hash. The Alpha Vantage API key is optional; without it, AAPL network collection is skipped. ntfy is optional; without a topic, alerts are recorded as `not_configured` and no request is sent.
 
 ## Development
 
@@ -71,7 +71,9 @@ The daily morning market briefing unit (`deploy/market-daily-briefing.service` &
 
 The automated SQLite backup timer (`deploy/market-backup.timer`) runs `python -m backend.backup` daily at 03:00. It uses SQLite's online `.backup` API to create consistent snapshots into `backups/market_YYYYMMDD_HHMMSS.sqlite3` while the database remains online, and automatically prunes backups older than `BACKUP_RETENTION_DAYS` (default 7 days).
 
-The social monitor unit is separate and is not included in the commands above. Install and start it only after reviewing [SOCIAL_INTELLIGENCE.md](./SOCIAL_INTELLIGENCE.md), confirming the `.env` permissions, and explicitly configuring X access. `X_API_ENABLED` defaults to false. The monitor polls at its configured interval and locks against duplicate worker processes. The social APIs are unauthenticated, and test-notification requests can send real messages; do not expose the API beyond loopback.
+The social monitor unit is separate and is not included in the commands above. Install and start it only after reviewing [SOCIAL_INTELLIGENCE.md](./SOCIAL_INTELLIGENCE.md), confirming the `.env` permissions, and explicitly configuring X access. `X_API_ENABLED` defaults to false. The monitor polls at its configured interval and locks against duplicate worker processes. The API requires authentication for data and management routes; health, login and refresh are public. Test-notification requests can send real messages; do not expose the API beyond loopback.
+
+The optional ntfy command listener is a separate service and remains disabled until its topics and signing secret are configured. Review [COMMAND_CENTER.md](./COMMAND_CENTER.md) before installing it. It supports read-only status commands plus fixed collection/backup jobs only; it cannot start or stop services.
 
 ## Backup and restore
 
@@ -102,4 +104,3 @@ Model artifacts and reports are separate files under `data/processed/models/`; b
 
 ## Limitations
 
-This is a personal-machine service. Sleep, power loss, network interruptions and user-session policy stop collection. systemd persistent timers can catch up after downtime, but provider rate limits still apply. Social collection is a separate optional worker. No remote access, public deployment, authentication, HTTPS termination, log rotation, or independent off-device backup is configured.

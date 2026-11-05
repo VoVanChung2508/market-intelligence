@@ -1,8 +1,27 @@
 # API
 
-Base URL: `http://127.0.0.1:8000`. JSON timestamps are UTC ISO-8601. The API is local-only and currently unauthenticated.
+Base URL: `http://127.0.0.1:8000`. JSON timestamps are UTC ISO-8601. The service defaults to loopback and requires bearer authentication for data and management APIs. Only `/healthz`, login and refresh are public.
 
 ## Endpoints
+
+### Authentication
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/auth/login` | Verify username/password and issue access + refresh tokens |
+| POST | `/api/auth/refresh` | Rotate a refresh token and issue a new access token |
+| GET | `/api/auth/me` | Return the authenticated account |
+| POST | `/api/auth/logout` | Revoke the current session |
+| GET/POST | `/api/auth/users` | ADMIN: list or create accounts |
+| PATCH | `/api/auth/users/{user_id}` | ADMIN: change role, active state or password |
+| GET | `/api/auth/audit` | ADMIN: paginated authentication/account audit records |
+| GET | `/api/auth/command-audit` | ADMIN: paginated ntfy command execution history |
+
+`POST /api/auth/login` accepts `{"username":"...","password":"..."}`. Include `Authorization: Bearer <access_token>` on protected requests. Access tokens expire after 15 minutes; refresh tokens rotate on use and expire after 14 days. Reuse of a previously consumed refresh token revokes that session. Passwords are Argon2-hashed. Roles are `ADMIN`, `USER` and `READ_ONLY`; read-only accounts can read but cannot make API mutations. Only ADMIN can manage accounts. The first ADMIN must be created locally with `python -m backend.auth bootstrap-admin --username <name>`; there is no public registration.
+
+The API fails closed when `AUTH_TOKEN_SECRET` is absent or shorter than 32 characters. Generate a private value (for example `openssl rand -hex 32`) and store it in `.env`. `CORS_ALLOWED_ORIGINS` is a comma-separated allowlist and defaults to the local Vite origins. API rate limiting is process-local (10 login attempts and 120 API requests per client IP per minute), so it is not a substitute for an edge proxy when running multiple workers.
+
+### Market and intelligence
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -24,7 +43,7 @@ Base URL: `http://127.0.0.1:8000`. JSON timestamps are UTC ISO-8601. The API is 
 | GET/POST/PATCH/DELETE | `/api/social/sources[/{source_id}]` | Manage local source registry; delete deactivates the source |
 | GET/POST | `/api/social/alert-rules` | List or add local alert rules |
 | GET | `/api/social/notification-history?limit=50&offset=0` | Per-channel delivery attempts |
-| POST | `/api/social/test-notification` | Send a real test to an enabled, configured channel |
+| POST | `/api/social/test-notification` | ADMIN: send a real test to an enabled, configured channel |
 
 `/` and frontend assets are served from `frontend/dist/` when that directory exists.
 
@@ -60,6 +79,10 @@ This is a schema example, not live market data. `price`/`volume` may be null; `f
 - `422`: invalid news category, asset symbol, or query bound.
 - `500`: unreadable stored model report.
 - `503`: local database unavailable on `/healthz`.
+- `401`: missing, invalid or expired authentication token.
+- `403`: account role does not permit the requested mutation.
+- `429`: API or login rate limit exceeded.
+- `503`: authentication signing configuration or database unavailable.
 
 A missing model evaluation is a successful response with `available: false`; it is not a prediction failure. No provider error text or credentials are returned in API responses.
 
@@ -67,7 +90,9 @@ The news list response includes `items`, total `count`, `limit`, `offset`, and s
 
 News collection is a separate command (`python -m backend.run_news_collector`) configured by the `MARKET_NEWS_FEEDS` JSON environment variable. It is not run by an API request and does not depend on AI/model inference.
 
-Social collection is separate from API reads and runs through `python -m backend.run_social_monitor` or `collect_social_once`. `POST /api/social/test-notification` can cause an external side effect if the requested channel is configured and enabled; it is not a dry run. The unauthenticated API must remain loopback-only. When `GEMINI_API_KEY` is configured, `GeminiAIProvider` acts as the active AI provider, generating summaries and sentiment labels with automatic heuristic fallback when quota is unavailable.
+Social collection is separate from API reads and runs through `python -m backend.run_social_monitor` or `collect_social_once`. `POST /api/social/test-notification` can cause an external side effect if the requested channel is configured and enabled; it is not a dry run. The authenticated API should remain loopback-only unless deployment security is separately reviewed. When `GEMINI_API_KEY` is configured, `GeminiAIProvider` acts as the active AI provider, generating summaries and sentiment labels with automatic heuristic fallback when quota is unavailable.
+
+The optional ntfy listener is a separate worker. Its exact command allowlist, HMAC envelope, nonce policy and operations are documented in [COMMAND_CENTER.md](./COMMAND_CENTER.md). It is disabled by default, does not execute arbitrary commands, and does not expose service start/stop/restart operations.
 
 ## Telegram Bot Interface
 
