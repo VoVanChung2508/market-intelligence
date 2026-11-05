@@ -7,6 +7,7 @@ import httpx
 import pytest
 import requests
 
+from backend.auth import create_user
 from backend.api import create_app
 from backend.database import connect, initialize_database
 from backend.social import (
@@ -24,6 +25,8 @@ from backend.social import (
     retry_failed_deliveries,
     send_telegram_notification,
 )
+
+TEST_PASSWORD = "market-intelligence-test-password"
 
 
 def _x_payload(post_id: str, text: str, *, username: str = "crypto_news") -> dict:
@@ -294,8 +297,20 @@ def test_social_source_and_alert_rule_api_validation(tmp_path):
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
+                create_user(
+                    app.state.db_path,
+                    "test-admin",
+                    TEST_PASSWORD,
+                    "ADMIN",
+                )
+                login = await client.post(
+                    "/api/auth/login",
+                    json={"username": "test-admin", "password": TEST_PASSWORD},
+                )
+                headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
                 source = await client.post(
                     "/api/social/sources",
+                    headers=headers,
                     json={
                         "account_id": "x-account-1",
                         "username": "official_project",
@@ -308,6 +323,7 @@ def test_social_source_and_alert_rule_api_validation(tmp_path):
                 )
                 duplicate = await client.post(
                     "/api/social/sources",
+                    headers=headers,
                     json={
                         "account_id": "x-account-1",
                         "username": "official_project",
@@ -316,10 +332,12 @@ def test_social_source_and_alert_rule_api_validation(tmp_path):
                 )
                 patched = await client.patch(
                     f"/api/social/sources/{source.json()['id']}",
+                    headers=headers,
                     json={"reputation_score": 80},
                 )
                 rule = await client.post(
                     "/api/social/alert-rules",
+                    headers=headers,
                     json={
                         "name": "btc-security",
                         "assets": ["BTC"],
@@ -331,10 +349,11 @@ def test_social_source_and_alert_rule_api_validation(tmp_path):
                 )
                 invalid_rule = await client.post(
                     "/api/social/alert-rules",
+                    headers=headers,
                     json={"name": "invalid", "categories": ["NOT_A_CATEGORY"]},
                 )
-                source_list = await client.get("/api/social/sources")
-                health = await client.get("/api/social/health")
+                source_list = await client.get("/api/social/sources", headers=headers)
+                health = await client.get("/api/social/health", headers=headers)
                 return source, duplicate, patched, rule, invalid_rule, source_list, health
 
     source, duplicate, patched, rule, invalid_rule, source_list, health = asyncio.run(request())

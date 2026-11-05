@@ -1,6 +1,8 @@
+import fcntl
 import logging
 
 from backend.collector import collect_once
+from backend.settings import DB_PATH
 
 
 def main() -> None:
@@ -8,7 +10,14 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    collect_once()
+    lock_path = DB_PATH.parent / "market-collector.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("Another market collector already holds the lock") from exc
+        collect_once()
 
 
 if __name__ == "__main__":

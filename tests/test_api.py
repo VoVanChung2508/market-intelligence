@@ -2,8 +2,35 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import pytest
 
+from backend.auth import bootstrap_admin, create_user, list_users
 from backend.api import create_app
+from backend.database import connect, initialize_database
+
+TEST_PASSWORD = "market-intelligence-test-password"
+
+
+def test_admin_bootstrap_is_one_time_and_stores_only_password_hash(tmp_path):
+    db_path = tmp_path / "market.sqlite3"
+    initialize_database(db_path)
+
+    account = bootstrap_admin(db_path, "first-admin", TEST_PASSWORD)
+
+    assert account["role"] == "ADMIN"
+    assert account["username"] == "first-admin"
+    connection = connect(db_path)
+    try:
+        stored_hash = connection.execute(
+            "SELECT password_hash FROM auth_users WHERE id = ?",
+            (account["id"],),
+        ).fetchone()["password_hash"]
+    finally:
+        connection.close()
+    assert stored_hash != TEST_PASSWORD
+    assert stored_hash.startswith("$argon2")
+    with pytest.raises(ValueError, match="Users already exist"):
+        bootstrap_admin(db_path, "second-admin", TEST_PASSWORD)
 
 
 def write_market_csv(data_dir, name, content):
@@ -19,7 +46,24 @@ def get_responses(app, *paths):
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
-                return [await client.get(path) for path in paths]
+                if not list_users(app.state.db_path):
+                    create_user(
+                        app.state.db_path,
+                        "test-admin",
+                        TEST_PASSWORD,
+                        "ADMIN",
+                    )
+                login = await client.post(
+                    "/api/auth/login",
+                    json={"username": "test-admin", "password": TEST_PASSWORD},
+                )
+                assert login.status_code == 200
+                headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+                return [
+                    await client.get(path, headers=headers) if path.startswith("/api/")
+                    else await client.get(path)
+                    for path in paths
+                ]
 
     return asyncio.run(send_requests())
 
@@ -32,7 +76,20 @@ def post_json(app, path, payload):
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
-                return await client.post(path, json=payload)
+                if not list_users(app.state.db_path):
+                    create_user(
+                        app.state.db_path,
+                        "test-admin",
+                        TEST_PASSWORD,
+                        "ADMIN",
+                    )
+                login = await client.post(
+                    "/api/auth/login",
+                    json={"username": "test-admin", "password": TEST_PASSWORD},
+                )
+                assert login.status_code == 200
+                headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+                return await client.post(path, json=payload, headers=headers)
 
     return asyncio.run(send_request())
 
@@ -150,6 +207,15 @@ def test_alert_endpoint_and_frontend_shell(tmp_path):
     assert "Market Intelligence" in shell.text
 
 
+def test_command_audit_endpoint_requires_admin(tmp_path):
+    app = create_app(tmp_path / "market.sqlite3", tmp_path / "raw")
+
+    response, = get_responses(app, "/api/auth/command-audit")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
 def test_crypto_watchlist_add_is_validated_and_visible_before_collection(tmp_path):
     app = create_app(tmp_path / "market.sqlite3", tmp_path / "raw", tmp_path / "models")
     payload = {"coin_id": "solana", "symbol": "SOL", "name": "Solana"}
@@ -170,3 +236,129 @@ def test_crypto_watchlist_add_is_validated_and_visible_before_collection(tmp_pat
     assert solana["price"] is None
     assert solana["freshness"] == "unavailable"
     assert solana["source"] == "Awaiting first collection"
+
+
+def test_api_authentication_rbac_refresh_rotation_and_security_headers(tmp_path):
+    app = create_app(tmp_path / "market.sqlite3", tmp_path / "raw")
+
+    async def exercise_auth():
+        async with app.router.lifespan_context(app):
+            create_user(app.state.db_path, "admin-user", TEST_PASSWORD, "ADMIN")
+            create_user(app.state.db_path, "read-user", TEST_PASSWORD, "READ_ONLY")
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                health = await client.get("/healthz")
+                unauthorized = await client.get("/api/v1/overview")
+                admin_login = await client.post(
+                    "/api/auth/login",
+                    json={"username": "admin-user", "password": TEST_PASSWORD},
+                )
+                read_login = await client.post(
+                    "/api/auth/login",
+                    json={"username": "read-user", "password": TEST_PASSWORD},
+                )
+                read_headers = {
+                    "Authorization": f"Bearer {read_login.json()['access_token']}",
+                }
+                read_access = await client.get("/api/v1/overview", headers=read_headers)
+                read_mutation = await client.post(
+                    "/api/v1/watchlist/crypto",
+                    json={"coin_id": "solana", "symbol": "SOL", "name": "Solana"},
+                    headers=read_headers,
+                )
+                admin_headers = {
+                    "Authorization": f"Bearer {admin_login.json()['access_token']}",
+                }
+                admin_user_list = await client.get("/api/auth/users", headers=admin_headers)
+                last_admin_update = await client.patch(
+                    "/api/auth/users/1",
+                    headers=admin_headers,
+                    json={"role": "READ_ONLY"},
+                )
+                audit = await client.get("/api/auth/audit", headers=admin_headers)
+                old_refresh = read_login.json()["refresh_token"]
+                refreshed = await client.post(
+                    "/api/auth/refresh",
+                    json={"refresh_token": old_refresh},
+                )
+                replay = await client.post(
+                    "/api/auth/refresh",
+                    json={"refresh_token": old_refresh},
+                )
+                revoked_access = await client.get(
+                    "/api/v1/overview",
+                    headers={"Authorization": f"Bearer {refreshed.json()['access_token']}"},
+                )
+                return (
+                    health,
+                    unauthorized,
+                    admin_login,
+                    read_access,
+                    read_mutation,
+                    admin_user_list,
+                    last_admin_update,
+                    audit,
+                    refreshed,
+                    replay,
+                    revoked_access,
+                )
+
+    (
+        health,
+        unauthorized,
+        admin_login,
+        read_access,
+        read_mutation,
+        admin_user_list,
+        last_admin_update,
+        audit,
+        refreshed,
+        replay,
+        revoked_access,
+    ) = asyncio.run(exercise_auth())
+
+    assert health.status_code == 200
+    assert unauthorized.status_code == 401
+    assert admin_login.status_code == 200
+    assert admin_login.headers["cache-control"] == "no-store"
+    assert read_access.status_code == 200
+    assert read_mutation.status_code == 403
+    assert admin_user_list.status_code == 200
+    assert len(admin_user_list.json()["items"]) == 2
+    assert "password_hash" not in admin_user_list.text
+    assert last_admin_update.status_code == 422
+    assert audit.status_code == 200
+    assert audit.json()["count"] >= 2
+    assert refreshed.status_code == 200
+    assert refreshed.json()["refresh_token"] != ""
+    assert replay.status_code == 401
+    assert revoked_access.status_code == 401
+
+
+def test_login_rate_limit_and_cors_allowlist(tmp_path):
+    app = create_app(tmp_path / "market.sqlite3", tmp_path / "raw")
+
+    async def exercise_limits():
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                responses = [
+                    await client.post("/api/auth/login", json={})
+                    for _ in range(11)
+                ]
+                allowed_origin = await client.get(
+                    "/healthz",
+                    headers={"Origin": "http://localhost:5173"},
+                )
+                rejected_origin = await client.get(
+                    "/healthz",
+                    headers={"Origin": "https://untrusted.example"},
+                )
+                return responses, allowed_origin, rejected_origin
+
+    responses, allowed_origin, rejected_origin = asyncio.run(exercise_limits())
+    assert [response.status_code for response in responses[:10]] == [422] * 10
+    assert responses[10].status_code == 429
+    assert responses[10].headers["retry-after"] == "60"
+    assert allowed_origin.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "access-control-allow-origin" not in rejected_origin.headers

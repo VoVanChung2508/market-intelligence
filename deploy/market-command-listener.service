@@ -1,0 +1,23 @@
+[Unit]
+Description=Market Intelligence authenticated ntfy command listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/market-intelligence
+EnvironmentFile=-%h/market-intelligence/.env
+ExecStart=%h/market-intelligence/.venv/bin/python -m backend.command_listener run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/market-intelligence/data/processed
+ReadWritePaths=-%h/market-intelligence/backups
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

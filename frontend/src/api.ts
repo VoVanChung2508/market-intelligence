@@ -199,15 +199,123 @@ export class ApiError extends Error {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+const REFRESH_TOKEN_KEY = "market-intelligence-refresh-token";
+let accessToken: string | null = null;
+let refreshInFlight: Promise<AuthUser | null> | null = null;
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  role: "ADMIN" | "USER" | "READ_ONLY";
+}
+
+interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  user: AuthUser;
+}
+
+function saveTokens(tokens: TokenResponse): AuthUser {
+  accessToken = tokens.access_token;
+  window.sessionStorage.setItem(REFRESH_TOKEN_KEY, tokens.refresh_token);
+  return tokens.user;
+}
+
+function clearTokens(): void {
+  accessToken = null;
+  window.sessionStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+async function responseError(response: Response): Promise<ApiError> {
+  let message = `Market service returned ${response.status}`;
+  try {
+    const body = await response.json() as { detail?: unknown };
+    if (typeof body.detail === "string") message = body.detail;
+  } catch {
+    // Keep the status-based message for non-JSON responses.
+  }
+  return new ApiError(response.status, message);
+}
+
+async function refreshTokens(): Promise<AuthUser | null> {
+  const refreshToken = window.sessionStorage.getItem(REFRESH_TOKEN_KEY);
+  if (!refreshToken) return null;
+  const response = await fetch(`${API_BASE}/api/auth/refresh`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!response.ok) {
+    clearTokens();
+    if (response.status === 401) return null;
+    throw await responseError(response);
+  }
+  return saveTokens(await response.json() as TokenResponse);
+}
+
+async function authenticatedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+  let response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  if (response.status === 401 && !path.startsWith("/api/auth/")) {
+    if (!refreshInFlight) {
+      refreshInFlight = refreshTokens().finally(() => {
+        refreshInFlight = null;
+      });
+    }
+    const refreshedUser = await refreshInFlight;
+    if (refreshedUser && accessToken) {
+      headers.set("Authorization", `Bearer ${accessToken}`);
+      response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+    } else {
+      clearTokens();
+      window.dispatchEvent(new Event("auth-expired"));
+    }
+    if (response.status === 401) window.dispatchEvent(new Event("auth-expired"));
+  }
+  return response;
+}
+
+export async function restoreSession(): Promise<AuthUser | null> {
+  if (!window.sessionStorage.getItem(REFRESH_TOKEN_KEY)) return null;
+  if (!refreshInFlight) {
+    refreshInFlight = refreshTokens().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+export async function login(
+  username: string,
+  password: string,
+): Promise<AuthUser> {
+  const response = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) throw await responseError(response);
+  return saveTokens(await response.json() as TokenResponse);
+}
+
+export async function logout(): Promise<void> {
+  try {
+    const response = await authenticatedFetch("/api/auth/logout", { method: "POST" });
+    if (!response.ok) throw await responseError(response);
+  } finally {
+    clearTokens();
+  }
+}
 
 async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: "application/json" },
+  const response = await authenticatedFetch(path, {
     signal,
   });
 
   if (!response.ok) {
-    throw new ApiError(response.status, `Market service returned ${response.status}`);
+    throw await responseError(response);
   }
 
   return response.json() as Promise<T>;
@@ -298,13 +406,13 @@ async function mutate<T>(
   method: "POST" | "PATCH" | "DELETE",
   data?: object,
 ): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await authenticatedFetch(path, {
     method,
-    headers: { Accept: "application/json", ...(data ? { "Content-Type": "application/json" } : {}) },
+    headers: data ? { "Content-Type": "application/json" } : undefined,
     body: data ? JSON.stringify(data) : undefined,
   });
   if (!response.ok) {
-    throw new ApiError(response.status, `Market service returned ${response.status}`);
+    throw await responseError(response);
   }
   return response.json() as Promise<T>;
 }
