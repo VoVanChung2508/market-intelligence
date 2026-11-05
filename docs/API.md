@@ -67,4 +67,12 @@ The news list response includes `items`, total `count`, `limit`, `offset`, and s
 
 News collection is a separate command (`python -m backend.run_news_collector`) configured by the `MARKET_NEWS_FEEDS` JSON environment variable. It is not run by an API request and does not depend on AI/model inference.
 
-Social collection is separate from API reads and runs through `python -m backend.run_social_monitor` or `collect_social_once`. `POST /api/social/test-notification` can cause an external side effect if the requested channel is configured and enabled; it is not a dry run. The unauthenticated API must remain loopback-only. Social posts/events are labeled unverified, classification is heuristic, and the AI status is `disabled` or `not_configured` until an actual provider is implemented.
+Social collection is separate from API reads and runs through `python -m backend.run_social_monitor` or `collect_social_once`. `POST /api/social/test-notification` can cause an external side effect if the requested channel is configured and enabled; it is not a dry run. The unauthenticated API must remain loopback-only. When `GEMINI_API_KEY` is configured, `GeminiAIProvider` acts as the active AI provider, generating summaries and sentiment labels with automatic heuristic fallback when quota is unavailable.
+
+## Telegram Bot Interface
+
+An interactive command interface is available via `python -m backend.telegram_bot` (or `market-telegram-bot.service`), strictly restricted to requests coming from the configured `TELEGRAM_CHAT_ID`:
+- `/status`: Returns `/healthz` readiness, overall data freshness, and most recent collector job outcomes.
+- `/overview`: Lists watchlist asset prices and 24h change percentages directly from `GET /api/v1/overview`.
+- `/news [symbol]`: Lists top 3 latest articles matching the specified asset.
+- `/briefing`: Generates a real-time summary of portfolio status and recent market news.

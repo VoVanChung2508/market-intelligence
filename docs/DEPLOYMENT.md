@@ -25,7 +25,7 @@ For the hot-reload frontend, run `npm --prefix frontend run dev -- --host 127.0.
 
 ## User systemd
 
-Review `deploy/market-api.service`, `deploy/market-collector.service`, `deploy/market-collector.timer`, `deploy/market-news-collector.service`, `deploy/market-news-collector.timer`, `deploy/market-realtime-monitor.service`, and (if needed) `deploy/market-social-monitor.service` before installing. These run as the logged-in user; the API stays loopback-only.
+Review `deploy/market-api.service`, `deploy/market-collector.service`, `deploy/market-collector.timer`, `deploy/market-news-collector.service`, `deploy/market-news-collector.timer`, `deploy/market-realtime-monitor.service`, `deploy/market-backup.service`, `deploy/market-backup.timer`, `deploy/market-telegram-bot.service`, `deploy/market-daily-briefing.service`, `deploy/market-daily-briefing.timer`, and (if needed) `deploy/market-social-monitor.service` before installing. These run as the logged-in user; the API stays loopback-only.
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -34,9 +34,14 @@ cp deploy/market-collector.service ~/.config/systemd/user/
 cp deploy/market-collector.timer ~/.config/systemd/user/
 cp deploy/market-news-collector.service ~/.config/systemd/user/
 cp deploy/market-news-collector.timer ~/.config/systemd/user/
+cp deploy/market-backup.service ~/.config/systemd/user/
+cp deploy/market-backup.timer ~/.config/systemd/user/
+cp deploy/market-telegram-bot.service ~/.config/systemd/user/
+cp deploy/market-daily-briefing.service ~/.config/systemd/user/
+cp deploy/market-daily-briefing.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now market-api.service market-collector.timer market-news-collector.timer
-systemctl --user status market-api.service market-collector.timer market-news-collector.timer
+systemctl --user enable --now market-api.service market-collector.timer market-news-collector.timer market-backup.timer market-daily-briefing.timer market-telegram-bot.service
+systemctl --user status market-api.service market-collector.timer market-news-collector.timer market-backup.timer market-daily-briefing.timer market-telegram-bot.service
 ```
 
 If any destination unit already exists, inspect it before copying. For operation after logout/boot, configure systemd lingering for the user if permitted by the machine administrator.
@@ -56,11 +61,27 @@ The news collector timer (`market-news-collector.timer`) runs every 15 minutes t
 
 The real-time price monitor unit (`deploy/market-realtime-monitor.service`) runs `python -m backend.realtime_monitor` as a continuous worker. It polls intraday prices every 15–30 seconds (Binance public API for Crypto, optional Finnhub API for US equities), tracks rolling window price fluctuations (e.g. 15 minutes), and dispatches instant alerts via Telegram and ntfy with per-asset cooldown (e.g. 900 seconds) to prevent message spam. Like the social monitor, it uses an exclusive file lock (`realtime-monitor.lock`) and handles `SIGTERM`/`SIGINT` for graceful shutdown.
 
+The interactive Telegram bot unit (`deploy/market-telegram-bot.service`) runs `python -m backend.telegram_bot` as a continuous long-polling daemon. It securely processes commands only from the authorized `TELEGRAM_CHAT_ID`:
+- `/status`: System health (`/healthz`), data freshness, and recent collector job outcomes.
+- `/overview`: Watchlist asset prices, 24h change percentages, and data freshness.
+- `/news [symbol]`: Top 3 latest articles matching the specified asset.
+- `/briefing`: On-demand daily market intelligence briefing.
+
+The daily morning market briefing unit (`deploy/market-daily-briefing.service` & `market-daily-briefing.timer`) automatically triggers `python -m backend.telegram_bot --briefing` every morning at 08:00 local time.
+
+The automated SQLite backup timer (`deploy/market-backup.timer`) runs `python -m backend.backup` daily at 03:00. It uses SQLite's online `.backup` API to create consistent snapshots into `backups/market_YYYYMMDD_HHMMSS.sqlite3` while the database remains online, and automatically prunes backups older than `BACKUP_RETENTION_DAYS` (default 7 days).
+
 The social monitor unit is separate and is not included in the commands above. Install and start it only after reviewing [SOCIAL_INTELLIGENCE.md](./SOCIAL_INTELLIGENCE.md), confirming the `.env` permissions, and explicitly configuring X access. `X_API_ENABLED` defaults to false. The monitor polls at its configured interval and locks against duplicate worker processes. The social APIs are unauthenticated, and test-notification requests can send real messages; do not expose the API beyond loopback.
 
 ## Backup and restore
 
-Create a consistent SQLite backup while the service is running using SQLite's backup command. Choose a new filename; do not overwrite an existing backup.
+Automated daily backup is handled by `deploy/market-backup.timer`. You can also trigger a manual backup anytime:
+
+```bash
+python -m backend.backup
+```
+
+Or manually using the SQLite CLI:
 
 ```bash
 mkdir -p backups

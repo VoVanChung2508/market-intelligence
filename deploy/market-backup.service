@@ -1,0 +1,20 @@
+[Unit]
+Description=Market Intelligence SQLite daily backup
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/market-intelligence
+EnvironmentFile=-%h/market-intelligence/.env
+ExecStart=%h/market-intelligence/.venv/bin/python -m backend.backup
+TimeoutStartSec=300
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/market-intelligence/data/processed %h/market-intelligence/backups
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+

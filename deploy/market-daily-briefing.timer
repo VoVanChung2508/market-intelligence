@@ -1,0 +1,11 @@
+[Unit]
+Description=Trigger daily market briefing every morning at 08:00
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=market-daily-briefing.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=Trigger daily SQLite backup at 03:00
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=market-backup.service
+
+[Install]
+WantedBy=timers.target
+

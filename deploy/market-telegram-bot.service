@@ -1,0 +1,23 @@
+[Unit]
+Description=Market Intelligence Telegram 2-way bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/market-intelligence
+EnvironmentFile=-%h/market-intelligence/.env
+ExecStart=%h/market-intelligence/.venv/bin/python -m backend.telegram_bot
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/market-intelligence/data/processed
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+

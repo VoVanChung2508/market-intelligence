@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
@@ -23,6 +23,7 @@ from backend.database import (
     store_news_articles,
 )
 from backend.settings import DB_PATH
+from backend.ai_provider import GeminiAIProvider, translate_sentiment
 from src.notify import (
     is_telegram_configured,
     is_telegram_enabled,
@@ -401,11 +402,15 @@ def _asset_names(db_path: Path) -> dict[str, str]:
         connection.close()
 
 
-def format_news_telegram_message(article: dict[str, object]) -> tuple[str, str]:
+def format_news_telegram_message(
+    article: dict[str, object],
+    ai_provider: Any = None,
+) -> tuple[str, str]:
     title = str(article.get("title", "")).strip()
     source = str(article.get("source", "")).strip()
     category = str(article.get("category", "")).strip()
-    assets = ", ".join(article.get("related_assets") or [])  # type: ignore[arg-type]
+    assets_list = article.get("related_assets") or []
+    assets = ", ".join(assets_list)  # type: ignore[arg-type]
     url = str(article.get("canonical_url", "")).strip()
 
     header = f"News: {title}" if title else "Market News"
@@ -416,11 +421,29 @@ def format_news_telegram_message(article: dict[str, object]) -> tuple[str, str]:
         lines.append(f"Category: {category}")
     if assets:
         lines.append(f"Assets: {assets}")
-    summary = str(article.get("summary") or "").strip()
-    if summary:
-        if len(summary) > 300:
-            summary = summary[:297] + "..."
-        lines.append(f"Summary: {summary}")
+
+    provider = ai_provider or GeminiAIProvider()
+    try:
+        analysis = provider.analyze_news(
+            title,
+            summary=str(article.get("summary") or ""),
+            content=str(article.get("content") or ""),
+            related_assets=assets_list,  # type: ignore[arg-type]
+        )
+        ai_summary = analysis.get("summary")
+        sentiment = analysis.get("sentiment", "neutral")
+        model = analysis.get("model", "keyword-heuristic")
+        if ai_summary:
+            lines.append(f"AI Summary: {ai_summary}")
+        lines.append(f"Impact: {translate_sentiment(sentiment)} [{model}]")
+    except Exception as exc:
+        LOGGER.warning("news_ai_enrichment_failed error=%s", type(exc).__name__)
+        summary = str(article.get("summary") or "").strip()
+        if summary:
+            if len(summary) > 300:
+                summary = summary[:297] + "..."
+            lines.append(f"Summary: {summary}")
+
     if url:
         lines.append(f"Link: {url}")
 

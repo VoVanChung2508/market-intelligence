@@ -18,6 +18,7 @@ from urllib3.util.retry import Retry
 
 from backend.database import connect, get_crypto_watchlist, initialize_database
 from backend.settings import DB_PATH
+from backend.ai_provider import translate_sentiment
 from src.notify import send_notification, send_telegram_message
 
 LOGGER = logging.getLogger(__name__)
@@ -1250,15 +1251,22 @@ def _social_message(event: dict[str, Any]) -> tuple[str, str]:
         summary = summary[:797] + "..."
     ticker = event.get("symbol") or "CRYPTO"
     title = f"{event['priority'].upper()} {ticker} {event['category']}"
-    content = (
-        f"{ticker} | {event['category']} | {event['sentiment']} | "
-        f"priority {event['priority'].upper()} ({event['priority_score']:.0f}/100)\n"
-        f"Source: @{source}\n"
-        f"Unverified claim: {'yes' if event['unverified_claim'] else 'not detected'}\n"
-        f"Post: {summary}\n"
-        f"{event['post_url']}\n"
-        "Research information only; not a trading instruction."
-    )
+    sentiment_display = translate_sentiment(event.get("sentiment", "neutral"))
+    ai_summary = event.get("ai_summary") or event.get("summary")
+
+    lines = [
+        f"{ticker} | {event['category']} | {sentiment_display} | "
+        f"priority {event['priority'].upper()} ({event['priority_score']:.0f}/100)",
+        f"Source: @{source}",
+        f"Unverified claim: {'yes' if event['unverified_claim'] else 'not detected'}",
+    ]
+    if ai_summary:
+        lines.append(f"AI Summary: {ai_summary}")
+    lines.append(f"Post: {summary}")
+    lines.append(f"{event['post_url']}")
+    lines.append("Research information only; not a trading instruction.")
+
+    content = "\n".join(lines)
     return title[:120], content[:3500]
 
 

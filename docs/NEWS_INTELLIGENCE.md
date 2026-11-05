@@ -19,11 +19,18 @@ python -m backend.run_news_collector
 
 No source is configured by default. Collection results are printed and logged; the command exits unsuccessfully if any configured source fails. News collection uses no model inference and can run independently from market collection and model training.
 
-When `TELEGRAM_ENABLED=true` and Telegram bot credentials are configured, newly inserted articles that match tracked watchlist assets trigger a summary notification via Telegram containing the title, source, category, matched asset symbols, and canonical URL. Telegram delivery errors are isolated and never prevent news ingestion from succeeding.
+When `TELEGRAM_ENABLED=true` and Telegram bot credentials are configured, newly inserted articles that match tracked watchlist assets trigger a notification via Telegram containing the title, source, category, matched asset symbols, and canonical URL. Furthermore, when `GEMINI_API_KEY` is configured, each notification is enriched with an AI-generated concise summary (1–2 sentences) and market impact assessment (`Tích cực`, `Tiêu cực`, or `Trung lập`). If the Gemini API key is unset or quota limits are reached (HTTP 429), the system falls back safely to keyword-based heuristics (`POSITIVE_TERMS` / `NEGATIVE_TERMS`). AI analysis and Telegram delivery errors are isolated and never prevent news ingestion or database commits from succeeding.
 
 The importer stores title, source-provided summary/content, article URL, source label, feed provenance in the local database, language when provided, UTC publication timestamp when parseable, deterministic category, and tracked asset matches. If publication time is missing or invalid, it stays `null`. HTML in feed summaries is converted to text; it is not rendered as markup in the dashboard. The source URL is kept internally for provenance and is not included in API responses; sensitive query parameters are removed before storage.
 
 Duplicate checks cover canonical article URLs, normalized content fingerprints, and normalized title fingerprints on the same UTC publication date. These checks are designed for repeat ingestion and common cross-feed duplicates; they are not semantic near-duplicate detection.
+
+## Gemini AI Integration
+
+The `backend.ai_provider.GeminiAIProvider` handles LLM-based intelligence enrichment:
+- **Model**: Configurable via `GEMINI_MODEL` (default: `gemini-2.5-flash`).
+- **Resilience**: Configured with timeouts, bounded exponential backoff retries on rate limits, and fallback to keyword heuristics upon provider failure or quota exhaustion.
+- **Safety**: Raw source data is stored unmutated; AI summaries and impact assessments are attached on alert delivery or stored with model provenance without rolling back collected content.
 
 ## API and dashboard
 
