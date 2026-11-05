@@ -23,6 +23,11 @@ from backend.database import (
     store_news_articles,
 )
 from backend.settings import DB_PATH
+from src.notify import (
+    is_telegram_configured,
+    is_telegram_enabled,
+    send_telegram_message,
+)
 
 LOGGER = logging.getLogger(__name__)
 MAX_FEEDS = 20
@@ -396,11 +401,50 @@ def _asset_names(db_path: Path) -> dict[str, str]:
         connection.close()
 
 
+def format_news_telegram_message(article: dict[str, object]) -> tuple[str, str]:
+    title = str(article.get("title", "")).strip()
+    source = str(article.get("source", "")).strip()
+    category = str(article.get("category", "")).strip()
+    assets = ", ".join(article.get("related_assets") or [])  # type: ignore[arg-type]
+    url = str(article.get("canonical_url", "")).strip()
+
+    header = f"News: {title}" if title else "Market News"
+    lines = []
+    if source:
+        lines.append(f"Source: {source}")
+    if category:
+        lines.append(f"Category: {category}")
+    if assets:
+        lines.append(f"Assets: {assets}")
+    summary = str(article.get("summary") or "").strip()
+    if summary:
+        if len(summary) > 300:
+            summary = summary[:297] + "..."
+        lines.append(f"Summary: {summary}")
+    if url:
+        lines.append(f"Link: {url}")
+
+    return header, "\n".join(lines)
+
+
+def send_news_telegram_notification(article: dict[str, object]) -> tuple[bool, str | None]:
+    if not is_telegram_enabled():
+        return False, "disabled"
+    if not is_telegram_configured():
+        return False, "not_configured"
+    if not article.get("related_assets"):
+        return False, "no_matched_assets"
+
+    header, body = format_news_telegram_message(article)
+    return send_telegram_message(header, body)
+
+
 def collect_news(
     feeds: list[NewsFeed] | None = None,
     db_path: Path = DB_PATH,
     session: requests.Session | None = None,
     provider: NewsProvider | None = None,
+    notify_telegram: bool = True,
 ) -> dict[str, int]:
     selected_feeds = configured_news_feeds() if feeds is None else feeds
     initialize_database(db_path)
@@ -440,7 +484,19 @@ def collect_news(
                 continue
             result["sources_succeeded"] += 1
             result["articles_received"] += len(articles)
-            result["articles_inserted"] += store_news_articles(db_path, articles)
+            new_articles: list[dict[str, object]] = []
+            inserted_count = store_news_articles(db_path, articles, inserted_articles=new_articles)
+            result["articles_inserted"] += inserted_count
+            if notify_telegram and is_telegram_enabled() and is_telegram_configured():
+                for article in new_articles:
+                    if article.get("related_assets"):
+                        try:
+                            send_news_telegram_notification(article)
+                        except Exception as exc:
+                            LOGGER.warning(
+                                "news_telegram_notification_failed error=%s",
+                                type(exc).__name__,
+                            )
             LOGGER.info(
                 "news_feed_collected source=%s received=%s",
                 feed.name,

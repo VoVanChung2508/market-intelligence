@@ -618,6 +618,7 @@ def get_alert_events(db_path: Path, limit: int = 100) -> list[dict[str, object]]
 def store_news_articles(
     db_path: Path,
     articles: list[dict[str, object]],
+    inserted_articles: list[dict[str, object]] | None = None,
 ) -> int:
     if not articles:
         return 0
@@ -671,6 +672,8 @@ def store_news_articles(
                     (article_id, symbol),
                 )
             inserted += 1
+            if inserted_articles is not None:
+                inserted_articles.append(article)
         connection.commit()
         return inserted
     except Exception:

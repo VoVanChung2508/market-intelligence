@@ -11,7 +11,7 @@ Base URL: `http://127.0.0.1:8000`. JSON timestamps are UTC ISO-8601. The API is 
 | GET | `/api/v1/assets?q=&asset_class=&limit=` | Filtered current asset list; limit 1–500 |
 | GET | `/api/v1/assets/{symbol}/bars?interval=1h&limit=96` | Bounded historical bars; interval `1h` or `1d`, limit 1–500 |
 | GET | `/api/v1/system/jobs?limit=20` | Recent collection outcomes; limit 1–100 |
-| GET | `/api/v1/alerts?limit=100` | Alert history, configured threshold and ntfy configured boolean |
+| GET | `/api/v1/alerts?limit=100` | Alert history, configured threshold, ntfy and telegram configured booleans |
 | GET | `/api/v1/news?q=&category=&asset=&limit=50&offset=0` | Search/filter collected RSS/Atom articles; limit 1–100 |
 | GET | `/api/v1/news/{article_id}` | Retrieve one stored article |
 | GET | `/api/v1/analysis/{symbol}` | Stored model report or `{available:false,...}` when none exists |
