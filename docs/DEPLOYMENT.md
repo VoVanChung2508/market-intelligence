@@ -25,16 +25,18 @@ For the hot-reload frontend, run `npm --prefix frontend run dev -- --host 127.0.
 
 ## User systemd
 
-Review `deploy/market-api.service`, `deploy/market-collector.service`, `deploy/market-collector.timer`, and (if needed) `deploy/market-social-monitor.service` before installing. These run as the logged-in user; the API stays loopback-only.
+Review `deploy/market-api.service`, `deploy/market-collector.service`, `deploy/market-collector.timer`, `deploy/market-news-collector.service`, `deploy/market-news-collector.timer`, `deploy/market-realtime-monitor.service`, and (if needed) `deploy/market-social-monitor.service` before installing. These run as the logged-in user; the API stays loopback-only.
 
 ```bash
 mkdir -p ~/.config/systemd/user
 cp deploy/market-api.service ~/.config/systemd/user/
 cp deploy/market-collector.service ~/.config/systemd/user/
 cp deploy/market-collector.timer ~/.config/systemd/user/
+cp deploy/market-news-collector.service ~/.config/systemd/user/
+cp deploy/market-news-collector.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now market-api.service market-collector.timer
-systemctl --user status market-api.service market-collector.timer
+systemctl --user enable --now market-api.service market-collector.timer market-news-collector.timer
+systemctl --user status market-api.service market-collector.timer market-news-collector.timer
 ```
 
 If any destination unit already exists, inspect it before copying. For operation after logout/boot, configure systemd lingering for the user if permitted by the machine administrator.
@@ -48,7 +50,11 @@ systemctl --user restart market-api.service
 systemctl --user stop market-collector.timer market-api.service
 ```
 
-The collector timer runs every 30 minutes. Alpha Vantage attempts are additionally guarded by a 20-hour cooldown. ntfy alerts only trigger when a new adjacent bar crosses the configured absolute move threshold; delivery is deduplicated per source bar.
+The collector timer runs every 30 minutes. Alpha Vantage attempts are additionally guarded by a 20-hour cooldown. Market alerts trigger when a new adjacent bar crosses the configured absolute move threshold; alerts are sent concurrently across configured channels (ntfy and/or Telegram) with isolated failure handling and deduplication per source bar.
+
+The news collector timer (`market-news-collector.timer`) runs every 15 minutes to pull configured RSS/Atom feeds. When `TELEGRAM_ENABLED=true` and Telegram is configured, newly stored articles that match tracked watchlist assets automatically dispatch summary notifications via Telegram.
+
+The real-time price monitor unit (`deploy/market-realtime-monitor.service`) runs `python -m backend.realtime_monitor` as a continuous worker. It polls intraday prices every 15–30 seconds (Binance public API for Crypto, optional Finnhub API for US equities), tracks rolling window price fluctuations (e.g. 15 minutes), and dispatches instant alerts via Telegram and ntfy with per-asset cooldown (e.g. 900 seconds) to prevent message spam. Like the social monitor, it uses an exclusive file lock (`realtime-monitor.lock`) and handles `SIGTERM`/`SIGINT` for graceful shutdown.
 
 The social monitor unit is separate and is not included in the commands above. Install and start it only after reviewing [SOCIAL_INTELLIGENCE.md](./SOCIAL_INTELLIGENCE.md), confirming the `.env` permissions, and explicitly configuring X access. `X_API_ENABLED` defaults to false. The monitor polls at its configured interval and locks against duplicate worker processes. The API requires authentication for data and management routes; health, login and refresh are public. Test-notification requests can send real messages; do not expose the API beyond loopback.
 
@@ -77,4 +83,3 @@ Model artifacts and reports are separate files under `data/processed/models/`; b
 
 ## Limitations
 
-This is a personal-machine service. Sleep, power loss, network interruptions and user-session policy stop collection. systemd persistent timers can catch up after downtime, but provider rate limits still apply. News collection is a separate manual command and has no systemd timer. Social collection is a separate optional worker. No remote access, public deployment, HTTPS termination, log rotation, or independent off-device backup is configured. API rate limiting is process-local and should be supplemented by a reviewed reverse proxy before multi-worker or remote deployment.

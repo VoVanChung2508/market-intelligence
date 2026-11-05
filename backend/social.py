@@ -18,7 +18,7 @@ from urllib3.util.retry import Retry
 
 from backend.database import connect, get_crypto_watchlist, initialize_database
 from backend.settings import DB_PATH
-from src.notify import send_notification
+from src.notify import send_notification, send_telegram_message
 
 LOGGER = logging.getLogger(__name__)
 X_RECENT_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
@@ -1263,36 +1263,8 @@ def _social_message(event: dict[str, Any]) -> tuple[str, str]:
 
 
 def send_telegram_notification(event: dict[str, Any]) -> tuple[bool, str | None]:
-    if not _enabled(os.getenv("TELEGRAM_ENABLED"), False):
-        return False, "disabled"
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
-        return False, "not_configured"
     title, content = _social_message(event)
-    safe_title = html.escape(title)
-    safe_text = html.escape(content)
-    message = f"<b>{safe_title}</b>\n{safe_text}"
-    if len(message) > 4000:
-        message = message[:3997] + "..."
-    session = _http_session(retry_post=True)
-    try:
-        response = session.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
-            timeout=(5, 15),
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return False, "provider_rejected"
-        return True, None
-    except requests.RequestException as exc:
-        return False, type(exc).__name__
-    except ValueError:
-        return False, "invalid_provider_response"
-    finally:
-        session.close()
+    return send_telegram_message(title, content)
 
 
 def _dispatch_alert(

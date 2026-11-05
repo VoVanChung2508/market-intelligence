@@ -202,6 +202,7 @@ def test_alert_endpoint_and_frontend_shell(tmp_path):
     assert alerts.json()["items"] == []
     assert 0 < alerts.json()["threshold_pct"] <= 100
     assert isinstance(alerts.json()["ntfy_configured"], bool)
+    assert isinstance(alerts.json()["telegram_configured"], bool)
     assert shell.status_code == 200
     assert "Market Intelligence" in shell.text
 

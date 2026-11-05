@@ -1,3 +1,4 @@
+import concurrent.futures
 import logging
 import hashlib
 import os
@@ -6,7 +7,12 @@ from pathlib import Path
 
 from backend.database import connect
 from backend.settings import DB_PATH
-from src.notify import send_notification
+from src.notify import (
+    is_telegram_configured,
+    is_telegram_enabled,
+    send_notification,
+    send_telegram_message,
+)
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_CHANGE_THRESHOLD_PCT = 5.0
@@ -116,7 +122,16 @@ def publish_alert(
         connection.close()
 
     topic = os.getenv("NTFY_TOPIC", "").strip()
-    if not topic:
+    ntfy_enabled = os.getenv("NTFY_ENABLED", "true").strip().casefold() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    ntfy_active = bool(topic) and ntfy_enabled
+    tg_active = is_telegram_enabled() and is_telegram_configured()
+
+    if not ntfy_active and not tg_active:
         _update_delivery(db_path, str(alert["event_key"]), "not_configured", None)
         LOGGER.info("alert_saved symbol=%s delivery=not_configured", alert["symbol"])
         return False
@@ -128,22 +143,65 @@ def publish_alert(
         "Research alert only; not a trading instruction."
     )
     sequence_id = hashlib.sha256(str(alert["event_key"]).encode("utf-8")).hexdigest()[:32]
-    try:
-        sent = send_notification(
-            title,
-            message,
-            priority="high",
-            sequence_id=sequence_id,
-        )
-    except Exception as exc:
-        _update_delivery(db_path, str(alert["event_key"]), "failed", type(exc).__name__)
-        LOGGER.warning("alert_delivery_failed symbol=%s error=%s", alert["symbol"], type(exc).__name__)
-        return False
 
-    status = "sent" if sent else "failed"
-    _update_delivery(db_path, str(alert["event_key"]), status, None if sent else "ntfy_request_failed")
-    LOGGER.info("alert_saved symbol=%s delivery=%s", alert["symbol"], status)
-    return sent
+    sent_ntfy = False
+    sent_tg = False
+    errors: list[str] = []
+
+    def _deliver_ntfy() -> None:
+        nonlocal sent_ntfy
+        try:
+            ok = send_notification(
+                title,
+                message,
+                priority="high",
+                sequence_id=sequence_id,
+            )
+            if ok:
+                sent_ntfy = True
+            else:
+                errors.append("ntfy_request_failed")
+        except Exception as exc:
+            errors.append(f"ntfy:{type(exc).__name__}")
+            LOGGER.warning("alert_delivery_failed symbol=%s channel=ntfy error=%s", alert["symbol"], type(exc).__name__)
+
+    def _deliver_tg() -> None:
+        nonlocal sent_tg
+        try:
+            ok, err = send_telegram_message(
+                title,
+                message,
+            )
+            if ok:
+                sent_tg = True
+            else:
+                errors.append(f"telegram:{err or 'failed'}")
+        except Exception as exc:
+            errors.append(f"telegram:{type(exc).__name__}")
+            LOGGER.warning("alert_delivery_failed symbol=%s channel=telegram error=%s", alert["symbol"], type(exc).__name__)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = []
+        if ntfy_active:
+            futures.append(executor.submit(_deliver_ntfy))
+        if tg_active:
+            futures.append(executor.submit(_deliver_tg))
+        for future in futures:
+            future.result()
+
+    any_sent = sent_ntfy or sent_tg
+    if any_sent:
+        status = "sent"
+        error_summary = "; ".join(errors) if errors else None
+        _update_delivery(db_path, str(alert["event_key"]), status, error_summary)
+        LOGGER.info("alert_saved symbol=%s delivery=%s", alert["symbol"], status)
+        return True
+    else:
+        status = "failed"
+        error_summary = "; ".join(errors) if errors else "all_channels_failed"
+        _update_delivery(db_path, str(alert["event_key"]), status, error_summary)
+        LOGGER.info("alert_saved symbol=%s delivery=%s", alert["symbol"], status)
+        return False
 
 
 def _update_delivery(

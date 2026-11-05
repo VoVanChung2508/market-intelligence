@@ -66,6 +66,7 @@ from backend.social import (
     update_social_source,
 )
 from backend.settings import DATA_DIR, DB_PATH
+from src.notify import is_telegram_configured
 
 ROOT = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
@@ -517,6 +518,7 @@ def create_app(
             "items": get_alert_events(resolved_db_path, limit),
             "threshold_pct": configured_threshold_pct(),
             "ntfy_configured": bool(os.getenv("NTFY_TOPIC", "").strip()),
+            "telegram_configured": is_telegram_configured(),
         }
 
     @app.get("/api/social/health")

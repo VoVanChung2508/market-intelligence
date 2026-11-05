@@ -15,7 +15,9 @@ from backend.news import (
     RSSAtomProvider,
     collect_news,
     configured_news_feeds,
+    format_news_telegram_message,
     parse_news_feed,
+    send_news_telegram_notification,
 )
 
 
@@ -252,3 +254,102 @@ def test_news_api_search_asset_category_and_detail(tmp_path):
     assert detail.json()["title"] == "Apple reports quarterly results"
     assert missing.status_code == 404
     assert invalid_category.status_code == 422
+
+
+def test_news_telegram_notification_formatting_and_matching(monkeypatch, capsys):
+    from types import SimpleNamespace
+    import requests
+
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-news-bot-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "-100987654321")
+
+    captured = {}
+
+    def fake_post(self, url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs.get("json", {})
+        return SimpleNamespace(
+            status_code=200,
+            raise_for_status=lambda: None,
+            json=lambda: {"ok": True},
+        )
+
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+
+    matched_article = {
+        "title": "Fed rate cut & <policy> shifts",
+        "source": "Macro Wire",
+        "category": "monetary_policy",
+        "related_assets": ["BTC", "ETH"],
+        "summary": "Policy statement with <markup> text",
+        "canonical_url": "https://macro.example/rate-cut",
+    }
+
+    ok, err = send_news_telegram_notification(matched_article)
+    assert ok is True
+    assert err is None
+    assert "secret-news-bot-token" in captured["url"]
+    assert captured["json"]["chat_id"] == "-100987654321"
+    assert captured["json"]["parse_mode"] == "HTML"
+    text = captured["json"]["text"]
+    assert "&lt;policy&gt;" in text
+    assert "Macro Wire" in text
+    assert "monetary_policy" in text
+    assert "BTC, ETH" in text
+    assert "https://macro.example/rate-cut" in text
+    # Verify no credentials in stdout/stderr
+    assert "secret-news-bot-token" not in capsys.readouterr().out
+
+    # Article without matched assets must be skipped
+    unmatched_article = {
+        "title": "General news without tracked ticker",
+        "source": "General Wire",
+        "category": "other",
+        "related_assets": [],
+        "canonical_url": "https://general.example/news",
+    }
+    ok, err = send_news_telegram_notification(unmatched_article)
+    assert ok is False
+    assert err == "no_matched_assets"
+
+    # When TELEGRAM_ENABLED is false
+    monkeypatch.setenv("TELEGRAM_ENABLED", "false")
+    ok, err = send_news_telegram_notification(matched_article)
+    assert ok is False
+    assert err == "disabled"
+
+
+def test_collect_news_sends_telegram_for_new_matched_articles_only(tmp_path, monkeypatch):
+    import backend.news as news_module
+
+    db_path = tmp_path / "market.sqlite3"
+    initialize_database(db_path)
+
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake_bot_token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "fake_chat_id")
+
+    notified_articles = []
+    monkeypatch.setattr(
+        news_module,
+        "send_news_telegram_notification",
+        lambda art: notified_articles.append(art) or (True, None),
+    )
+
+    class FakeProvider:
+        def fetch(self, feed, _session):
+            return RSS_DOCUMENT
+
+    feeds = [NewsFeed("Wire", "https://news.example/feed.xml")]
+
+    # First run: RSS_DOCUMENT has "Apple" matching AAPL in seed assets
+    result1 = collect_news(feeds, db_path=db_path, provider=FakeProvider())
+    assert result1["articles_inserted"] == 1
+    assert len(notified_articles) == 1
+    assert notified_articles[0]["related_assets"] == ["AAPL"]
+
+    # Second run with exact same feed: duplicate articles must not trigger notification
+    result2 = collect_news(feeds, db_path=db_path, provider=FakeProvider())
+    assert result2["articles_inserted"] == 0
+    assert len(notified_articles) == 1  # Still 1, no duplicate notification
