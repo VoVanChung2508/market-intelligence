@@ -12,6 +12,7 @@ st.set_page_config(
     page_title="Market Intelligence AI",
     page_icon="📈",
     layout="wide",
+    
 )
 
 st.title("Market Intelligence AI")
