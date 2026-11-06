@@ -144,12 +144,14 @@ def send_notification(title, message, priority="default", sequence_id=None):
         endpoint = f"{endpoint}/{quote(sequence_id, safe='')}"
 
     try:
+        from email.header import Header
+        safe_title = Header(title, "utf-8").encode()
         with _notification_session() as session:
             response = session.post(
                 endpoint,
                 data=message.encode("utf-8"),
                 headers={
-                    "Title": title,
+                    "Title": safe_title,
                     "Priority": str(priority),
                 },
                 timeout=(5, 15),
