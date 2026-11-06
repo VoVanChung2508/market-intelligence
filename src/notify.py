@@ -145,7 +145,7 @@ def send_notification(title, message, priority="default", sequence_id=None):
 
     try:
         from email.header import Header
-        safe_title = Header(title, "utf-8").encode()
+        safe_title = Header(title, "utf-8", maxlinelen=1000).encode().replace("\r", "").replace("\n", " ")
         with _notification_session() as session:
             response = session.post(
                 endpoint,
